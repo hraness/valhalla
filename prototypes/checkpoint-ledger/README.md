@@ -144,6 +144,24 @@ Reproduce the focused case suite from the repository root with:
 HEGEL_SEED=20261012 cargo +1.98.1 test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked --test rotation_archive_hegel
 ```
 
+A test-only I/O wrapper in `src/rotation_archive_io_faults.rs` exercises the
+real append seek, write and sync path for record frames and the one-byte
+capacity marker. It injects failed seeks, zero/partial record writes, sync
+failure and a lost acknowledgement after sync. The regressions require a
+poisoned handle to refuse a retry without another write; a fresh handle
+reopens only against the caller's exact independently held commitment and
+re-verifies ordered certificates. A recovered marker still rejects overflow
+without changing bytes or its commitment. Known-bad mutations show why
+clearing poison or guessing a commitment from disk is unsafe. Run the focused
+suite on Unix with:
+
+```console
+cargo +1.98.1 test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked --lib rotation_archive::io_faults
+```
+
+This is injected API-level I/O behavior, not an actual power cut or evidence
+that a separate host holds a fresh commitment. It does not activate rotation.
+
 The fixed transcript test is independently generated with Python `hashlib` and
 big-endian integers, using OpenSSL to derive public keys from **public test seeds**
 `[1,2,3]` and `[4,5,6]`. A one-event ledger with realm 42, epoch 7, actor 1,
