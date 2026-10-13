@@ -85,6 +85,21 @@ Publish a success result only after assertions and owned-process cleanup pass.
 Retain failed and interrupted results. Never repair a failed run by removing
 anti-replay state, journals, WAL, retained intents or a used cursor.
 
+**Headless MCP evidence (agent-decided, owner may revisit, 2026-10-13):**
+The advisory MCP process check reads the owned, bounded `build.json` beside the
+workflow's `fixture` before launch. Its sanitized receipt now carries that
+build's source, binary digest, lock digest, run ID, attempt and nonce. The
+aggregate rejects missing, wrongly typed or different values even when the
+binary bytes and journey are unchanged. A standalone MCP check of an immutable
+candidate named something other than `fixture` can run without a sibling
+manifest and report only its local result; a candidate named `fixture` without
+that manifest refuses before launch. Neither standalone case can satisfy the
+workflow aggregate without the bound context. The existing workflow bundle
+verification supplies the release profile; no workflow edit or new input was
+needed. This strengthens receipt correlation, not independent runner custody,
+browser/WASM equivalence, network reachability, NAT diversity or release
+readiness.
+
 ## Qualification journeys
 
 1. **Clean client:** start a new native account and fresh browser origin, select

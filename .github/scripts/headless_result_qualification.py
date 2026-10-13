@@ -2,9 +2,10 @@
 """Fail-closed aggregation of this attempt's headless qualification artifacts.
 
 The workflow downloads seven *exactly named* artifacts from its own run. This
-verifier checks their files, commitments, successful journeys and cleanup. MCP
-emits source/binary but not lock/run/attempt: its exact artifact selection and
-successful job bind those latter values; do not invent fields in its receipt.
+verifier checks their files, commitments, successful journeys and cleanup.
+MCP validates the sibling build manifest before launch and emits its exact run,
+attempt, nonce, lock, source and binary context; the aggregate requires
+every field even when candidate bytes recur across workflow attempts.
 This is advisory headless evidence, not browser, per-byte direct-path or NAT
 qualification. It does not independently authenticate a compromised runner.
 """
@@ -107,12 +108,11 @@ def current(value, now):
             "receipt is stale, unfinished or from the future")
 
 
-def success(value, schema, expected, now, *, full=True):
+def success(value, schema, expected, now):
     require(value.get("schema") == schema and value.get("passed") is True
             and value.get("cleanup_confirmed") is True, "journey or cleanup failed")
     selected(value, expected, ("source_sha", "binary_sha256"))
-    if full:
-        selected(value, expected, ("run_id", "run_attempt", "lock_sha256", "nonce"))
+    selected(value, expected, ("run_id", "run_attempt", "lock_sha256", "nonce"))
     current(value, now)
 
 
@@ -225,9 +225,8 @@ def verify(root, source_sha, run_id, run_attempt, lockfile, *, now=None):
             "managed always-cleanup failed")
     selected(cleanup, expected, ("source_sha", "run_id", "run_attempt"))
     process = document(artifact(root, "mcp", ("receipt.json",))["receipt.json"])
-    # The MCP runner does not emit lock_sha256, run_id or run_attempt. Its
-    # successful job and exact run/attempt artifact name are the run binding.
-    success(process, mcp.SCHEMA, expected, now, full=False)
+    # Exact artifact selection alone cannot exclude a same-binary cross-attempt receipt.
+    success(process, mcp.SCHEMA, expected, now)
     claims(process, {})
     require(process.get("platform") == "linux" and process.get("scope") ==
             "one fresh public room; actual foreground daemon and MCP pipes; no network peer"

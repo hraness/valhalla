@@ -1,6 +1,7 @@
 """MCP process adapter invariants; actual candidate execution is a separate run."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -103,7 +104,7 @@ class FakeMachine:
 
 class McpQualificationTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir="/tmp")
+        self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         self.binary = self.root / "vhalla"
         self.binary.write_bytes(b"synthetic immutable candidate")
@@ -121,6 +122,7 @@ class McpQualificationTests(unittest.TestCase):
         self.assertTrue(result["passed"], result)
         self.assertTrue(result["cleanup_confirmed"])
         self.assertTrue(all(result["cases"].values()))
+        self.assertFalse({"run_id", "run_attempt", "nonce", "lock_sha256"} & result.keys())
         self.assertEqual(self.machine.child.poll(), 0)
         commands = [argv for argv, _ in self.machine.calls if argv[1:] != ["--version"]]
         self.assertEqual(sum(argv[3] == "mcp" for argv in commands), 2)
@@ -136,6 +138,111 @@ class McpQualificationTests(unittest.TestCase):
             self.assertNotIn(private, text)
         self.assertEqual(self.run.grant_file.stat().st_mode & 0o777, 0o600)
         self.assertFalse((self.run.work / "diagnostic.json").exists())
+
+    def bundled_candidate(self):
+        bundle = self.root / "bundle"
+        bundle.mkdir()
+        fixture = bundle / "fixture"
+        fixture.write_bytes(self.binary.read_bytes())
+        fixture.chmod(0o500)
+        lock = self.root / "Cargo.lock"
+        lock.write_bytes(b"locked candidate\n")
+        manifest = dict(schema="valhalla.headless-public-independent-runners.v1",
+                        source_sha="a" * 40, binary_sha256=qualification.digest(fixture),
+                        run_id="73", run_attempt="2", nonce="b" * 64,
+                        lock_sha256=qualification.hashlib.sha256(lock.read_bytes()).hexdigest())
+        build = bundle / "build.json"
+        build.write_text(json.dumps(manifest))
+        return fixture, lock, manifest, build
+
+    def test_manifest_bound_journey_emits_exact_sanitized_context(self):
+        fixture, lock, manifest, _ = self.bundled_candidate()
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_SHA": "a" * 40,
+                                         "GITHUB_RUN_ID": "73", "GITHUB_RUN_ATTEMPT": "2"}):
+            run = qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                       "a" * 40, lockfile=lock, runner=self.machine,
+                                       popen=self.machine.start)
+        self.machine.run = run
+        result = run.run()
+        self.assertTrue(result["passed"], result)
+        receipt = json.loads((run.work / "receipt.json").read_text())
+        for field in ("source_sha", "binary_sha256", "run_id", "run_attempt", "nonce", "lock_sha256"):
+            self.assertEqual(receipt[field], manifest[field])
+        self.assertTrue(all(receipt["cases"].values()))
+        for private in (str(run.home), str(fixture), qualification.MESSAGE,
+                        self.machine.grant["token"], self.machine.grant["generation"]):
+            self.assertNotIn(private, (run.work / "receipt.json").read_text())
+
+    def test_manifest_refusal_precedes_work_directory_and_any_candidate_launch(self):
+        fixture, lock, manifest, build = self.bundled_candidate()
+        good = build.read_text()
+        cases = ["", "[]", '{"schema":NaN}', '{"schema":1,"schema":2}',
+                 "x" * (qualification.MAX_MANIFEST + 1)]
+        cases.append(json.dumps({key: value for key, value in manifest.items() if key != "nonce"}))
+        for field, value in (("source_sha", "c" * 40), ("binary_sha256", "c" * 64),
+                             ("run_id", 73), ("run_attempt", "0"),
+                             ("nonce", "z" * 64), ("lock_sha256", True)):
+            changed = dict(manifest, **{field: value})
+            cases.append(json.dumps(changed))
+        for index, raw in enumerate(cases):
+            with self.subTest(index=index):
+                build.write_text(raw)
+                with self.assertRaises((ValueError, OSError)):
+                    qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                         "a" * 40, lockfile=lock, runner=self.machine,
+                                         popen=self.machine.start)
+                self.assertFalse((self.root / "bound-work").exists())
+                self.assertEqual(self.machine.calls, [])
+        build.write_text(good)
+        for field, expected in (("GITHUB_RUN_ID", "74"), ("GITHUB_RUN_ATTEMPT", "3"),
+                                ("GITHUB_SHA", "c" * 40)):
+            with self.subTest(field=field), mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                    "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "73", "GITHUB_RUN_ATTEMPT": "2",
+                    field: expected}):
+                with self.assertRaises(ValueError):
+                    qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                         "a" * 40, lockfile=lock, runner=self.machine,
+                                         popen=self.machine.start)
+                self.assertEqual(self.machine.calls, [])
+        lock.write_bytes(b"different lock")
+        with self.assertRaises(ValueError):
+            qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                 "a" * 40, lockfile=lock, runner=self.machine, popen=self.machine.start)
+        self.assertEqual(self.machine.calls, [])
+        lock.write_bytes(b"x" * (qualification.MAX_LOCK + 1))
+        with self.assertRaises(ValueError):
+            qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                 "a" * 40, lockfile=lock, runner=self.machine, popen=self.machine.start)
+        lock.unlink()
+        lock.symlink_to(build)
+        with self.assertRaises(OSError):
+            qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                 "a" * 40, lockfile=lock, runner=self.machine, popen=self.machine.start)
+        self.assertFalse((self.root / "bound-work").exists())
+        self.assertEqual(self.machine.calls, [])
+
+    def test_manifest_unsafe_files_and_missing_fixture_manifest_refused(self):
+        fixture, lock, manifest, build = self.bundled_candidate()
+        twin = self.root / "twin"
+        twin.write_text(build.read_text())
+        build.unlink()
+        for prepare in (lambda: build.symlink_to(twin), lambda: os.link(twin, build),
+                        lambda: build.mkdir()):
+            with self.subTest(prepare=prepare):
+                prepare()
+                with self.assertRaises((ValueError, OSError)):
+                    qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                         "a" * 40, lockfile=lock, runner=self.machine,
+                                         popen=self.machine.start)
+                if build.is_dir() and not build.is_symlink():
+                    build.rmdir()
+                else:
+                    build.unlink()
+                self.assertFalse((self.root / "bound-work").exists())
+                self.assertEqual(self.machine.calls, [])
+        with self.assertRaises(OSError):
+            qualification.McpRun(fixture, manifest["binary_sha256"], self.root / "bound-work",
+                                 "a" * 40, lockfile=lock, runner=self.machine, popen=self.machine.start)
 
     def test_credential_leak_fails_and_still_joins_daemon(self):
         self.machine.leak = True
