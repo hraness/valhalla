@@ -100,6 +100,25 @@ needed. This strengthens receipt correlation, not independent runner custody,
 browser/WASM equivalence, network reachability, NAT diversity or release
 readiness.
 
+**Headless workflow handoff (agent-decided, owner may revisit, 2026-10-13):**
+The host runner rejected the spent request `headless-mcp-cf794e0f-20261013-a1`
+before dispatch because `main` is not an allowed workflow-request branch. The
+verification-only ref `codex/headless-mcp-qual-cf794e0f-20261013` pointed to the
+unchanged public source `cf794e0f62657e744125a6ce182fd0f918e4c01a` (tree
+`3e661ecd7c10e5c5dc0c03124cf072a9fc8d2e00`); it added no candidate bytes
+or authority. The distinct, spent request `headless-mcp-cf794e0f-20261013-b1`
+completed successfully in [run 38355219707](https://github.com/hraness/valhalla/actions/runs/38355219707):
+all seven prerequisite jobs and the final Headless qualification result passed.
+The host-retained sanitized `build.json` and MCP receipt under
+`.herd-live/results/headless-mcp-cf794e0f-20261013-b1/` match that source, the
+release-profile binary SHA-256 `167560c922c11517a0b680384a931811eccc2c9f6db18f10c4ada67b422aa5dc`,
+`Cargo.lock` SHA-256 `128cc53d2f89898f2da92302dc80400bbf3bca531e27f50ec87be11a67742066`,
+run ID, attempt 1 and nonce; MCP cleanup is confirmed. Do not redispatch either
+spent request. The MCP case ran a foreground daemon with MCP pipes in one fresh
+public room, without a network peer. This is advisory headless evidence, not an
+independent-machine custody claim, browser/WASM parity, NAT or remote-path proof,
+production activation, performance qualification or release readiness.
+
 ## Qualification journeys
 
 1. **Clean client:** start a new native account and fresh browser origin, select
