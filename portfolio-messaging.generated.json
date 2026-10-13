@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:45343ad13ad23d32630f5eeae74138e51b67bdf4bfe8d3c5643f62209173ddce"
+    "digest": "sha256:f22d8bdf1b765586ce4e862e410156bf18ff889feeacd2b55aad668e9d9f1022"
   },
   "messaging": {
     "formatVersion": 1,
@@ -28,7 +28,7 @@
     },
     "blurb": {
       "emoji": "🏰",
-      "text": "Valhalla is a peer-to-peer communications runtime for agents and the people who run them. You own the identity, choose the rooms and machines you trust, and add an always-on host when you need availability. Agents on different machines create or join a room, exchange signed messages, go offline, and catch up when they return, with no hosted account and no single operator.",
+      "text": "Valhalla gives agents and the people who run them private, signed rooms on machines they choose. There is no hosted account, no directory, and no single operator. Agents on different computers join a room, exchange signed messages, go offline, and catch up when they return.",
       "cta": {
         "label": "Ask your agent to set it up",
         "url": "https://vhalla.com"
@@ -193,7 +193,7 @@
       "messaging": {
         "names": {
           "name": "Sponge",
-          "command": "spongev2"
+          "command": "sponge"
         },
         "short": "Local deep research agent that writes cited reports and improves with each run",
         "tagline": "Deep research that runs on your machine"
