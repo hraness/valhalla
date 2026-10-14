@@ -21,6 +21,9 @@ mod formal_held_reply;
 #[path = "formal_finalized.rs"]
 mod formal_finalized;
 
+#[path = "rejoin_trace.rs"]
+mod rejoin_trace;
+
 /// The shared batch plan: `heights` room creations over 8 beneficiary
 /// owners and 16 eligible award sources — enough credits for two rooms
 /// per owner across the longest run.
@@ -242,16 +245,26 @@ async fn crashed_validator_recovers_and_rejoins() {
         );
     }
 
-    wait_for(
+    rejoin_trace::wait_for_rejoin(
         "all four nodes to commit height 2",
         || nodes.iter().all(|n| n.committed_height() >= 2),
         Duration::from_secs(60),
+        &nodes,
+        1,
+        None,
     )
     .await;
+
+    // Preserve every journal entry committed at the sampled pre-crash frontier.
+    // The node may already be past height 2 when the other peers catch up.
+    // Index and bundle reads are nonmutating even while the writer is live.
+    let pre_crash_height = nodes[0].committed_height().min(HEIGHTS);
+    let pre_crash_chain = rejoin_trace::committed_chain(&nodes[0].home, pre_crash_height);
 
     // Crash validator 1, wait a beat, restart on the same home.
     let victim = nodes.remove(0);
     victim.crash().await;
+    rejoin_trace::after_crash(&nodes, &base.join("n1"));
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let restarted = RoomNode::start(NodeSpec {
@@ -281,16 +294,22 @@ async fn crashed_validator_recovers_and_rejoins() {
         restarted.loaded.1
     );
 
-    wait_for(
+    rejoin_trace::wait_for_rejoin(
         "restarted validator to reach height 4",
         || restarted.committed_height() >= HEIGHTS,
         Duration::from_secs(90),
+        &nodes,
+        2,
+        Some(&restarted),
     )
     .await;
-    wait_for(
+    rejoin_trace::wait_for_rejoin(
         "peers to reach height 4",
         || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
         Duration::from_secs(60),
+        &nodes,
+        2,
+        Some(&restarted),
     )
     .await;
 
@@ -301,8 +320,30 @@ async fn crashed_validator_recovers_and_rejoins() {
             restarted_state
         );
     }
-    // Each height committed exactly once — the replay of the durable
-    // marker deduplicates rather than re-applying.
+    // Restart must not replace any pre-crash indexed bundle. At every
+    // height, the verified journal chain reaches the same state on all
+    // peers; the h=4 bundle must agree with the live frontier. Different
+    // nodes may retain different quorum certificates, so compare state
+    // commitments across peers rather than their bundle identities.
+    let restarted_chain = rejoin_trace::committed_chain(&restarted.home, HEIGHTS);
+    assert!(
+        restarted_chain[..pre_crash_chain.len()] == pre_crash_chain[..],
+        "restart replaced pre-crash journal history"
+    );
+    assert!(
+        restarted_chain[3].1 == restarted_state,
+        "journal tip differs from the live frontier"
+    );
+    for node in &nodes {
+        let peer_chain = rejoin_trace::committed_chain(&node.home, HEIGHTS);
+        assert!(
+            restarted_chain
+                .iter()
+                .zip(peer_chain.iter())
+                .all(|(restarted, peer)| restarted.1 == peer.1),
+            "journal state differs across validators"
+        );
+    }
     assert_eq!(restarted.adapter.lock().unwrap().frontier().height, HEIGHTS);
 
     for node in nodes {
