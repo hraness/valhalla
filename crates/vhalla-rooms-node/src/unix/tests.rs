@@ -255,16 +255,29 @@ async fn crashed_validator_recovers_and_rejoins() {
     )
     .await;
 
-    // Preserve every journal entry committed at the sampled pre-crash frontier.
-    // The node may already be past height 2 when the other peers catch up.
-    // Index and bundle reads are nonmutating even while the writer is live.
-    let pre_crash_height = nodes[0].committed_height().min(HEIGHTS);
-    let pre_crash_chain = rejoin_trace::committed_chain(&nodes[0].home, pre_crash_height);
-
-    // Crash validator 1, wait a beat, restart on the same home.
+    // Take the pre-restart chain only AFTER the victim is stopped: a live
+    // frontier sample can miss a height committed between sampling and crash.
+    // A run that finished h4 before the crash cannot prove h4 recovery.
+    let stopped_home = base.join("n1");
     let victim = nodes.remove(0);
     victim.crash().await;
-    rejoin_trace::after_crash(&nodes, &base.join("n1"));
+    rejoin_trace::after_crash(&nodes, &stopped_home);
+    let journal =
+        vhalla_journal::Journal::new(stopped_home.join("app/journal"), vhalla_journal::FsStore);
+    let pre_crash_height = (1..=HEIGHTS)
+        .rev()
+        .find(|&h| {
+            journal
+                .at_height(h)
+                .expect("stopped journal marker readable")
+                .is_some()
+        })
+        .expect("victim committed height 2 before crash");
+    assert!(
+        pre_crash_height < HEIGHTS,
+        "victim committed h4 before crash; this run cannot prove post-restart h4 recovery"
+    );
+    let pre_crash_chain = rejoin_trace::committed_chain(&stopped_home, pre_crash_height);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let restarted = RoomNode::start(NodeSpec {
