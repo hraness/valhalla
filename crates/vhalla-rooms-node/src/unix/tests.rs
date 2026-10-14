@@ -21,6 +21,9 @@ mod formal_held_reply;
 #[path = "formal_finalized.rs"]
 mod formal_finalized;
 
+#[path = "rejoin_trace.rs"]
+mod rejoin_trace;
+
 /// The shared batch plan: `heights` room creations over 8 beneficiary
 /// owners and 16 eligible award sources — enough credits for two rooms
 /// per owner across the longest run.
@@ -219,8 +222,17 @@ async fn late_joiner_syncs_and_commits() {
 /// journal frontier, and the node rejoins progress without double-apply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn crashed_validator_recovers_and_rejoins() {
+    let wal_trace = rejoin_trace::WalTrace::install();
     const HEIGHTS: u64 = 4;
     let plan = batch_plan(HEIGHTS);
+    // Stage h3-h4 only after the victim stops. Otherwise the four nodes can
+    // complete the entire plan between the h2 observation and the crash,
+    // making post-restart h4 progress impossible to demonstrate.
+    let first_two = plan
+        .iter()
+        .filter(|(height, _)| **height <= 2)
+        .map(|(height, batch)| (*height, batch.clone()))
+        .collect::<BTreeMap<_, _>>();
     let (keys, set) = validators(4);
     let base = fixture("crash");
     let base_port = 27300usize;
@@ -233,45 +245,127 @@ async fn crashed_validator_recovers_and_rejoins() {
                 config: node_config(i + 1, 4, base_port),
                 node_key: key.clone(),
                 validator_sets: sched(set.clone()),
-                held: plan.clone(),
+                held: first_two.clone(),
                 genesis: genesis(),
                 wal_faults: None,
-                net_gate: None,
+                net_gate: Some(NetGate::new()),
             })
             .await,
         );
     }
 
-    wait_for(
+    rejoin_trace::wait_for_rejoin(
         "all four nodes to commit height 2",
         || nodes.iter().all(|n| n.committed_height() >= 2),
         Duration::from_secs(60),
+        &nodes,
+        1,
+        None,
     )
     .await;
 
-    // Crash validator 1, wait a beat, restart on the same home.
-    let victim = nodes.remove(0);
+    // Take the pre-restart chain only AFTER the victim is stopped: a live
+    // frontier sample can miss a height committed between sampling and crash.
+    // A run that finished h4 before the crash cannot prove h4 recovery.
+    let stopped_home = base.join("n1");
+    let mut victim = nodes.remove(0);
+    // `crash` aborts the app loop but does not join its task. A synchronous
+    // journal write may still finish after it returns, so wait for the task
+    // to stop before treating the journal markers as a pre-restart frontier.
+    victim.task.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(10), &mut victim.task)
+        .await
+        .expect("application task must stop before inspecting the journal");
     victim.crash().await;
+    rejoin_trace::after_crash(&nodes, &stopped_home);
+    let journal =
+        vhalla_journal::Journal::new(stopped_home.join("app/journal"), vhalla_journal::FsStore);
+    let pre_crash_height = (1..=HEIGHTS)
+        .rev()
+        .find(|&h| {
+            journal
+                .at_height(h)
+                .expect("stopped journal marker readable")
+                .is_some()
+        })
+        .expect("victim committed height 2 before crash");
+    assert_eq!(
+        pre_crash_height, 2,
+        "victim must stop at h2 before any post-crash batches are released"
+    );
+    let pre_crash_chain = rejoin_trace::committed_chain(&stopped_home, pre_crash_height);
+    // The victim's stopped home must not already contain the h3-h4 bodies.
+    // Test only the two planned ids; no directory listing or WAL mutation.
+    for height in 3..=HEIGHTS {
+        let body = stopped_home
+            .join("store/batches")
+            .join(hex(&plan[&height].value_id()));
+        assert!(
+            matches!(std::fs::metadata(body), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+            "victim had a post-crash batch body before the peers advanced"
+        );
+    }
     tokio::time::sleep(Duration::from_secs(2)).await;
 
+    // The three live validators still form a quorum. Release each remaining
+    // planned batch only at its actual parent frontier, then let the crashed
+    // validator catch up from their decided history on the same home.
+    for height in 3..=HEIGHTS {
+        for node in &nodes {
+            node.submit(plan.get(&height).unwrap().clone()).await;
+        }
+        rejoin_trace::wait_for_rejoin(
+            &format!("live peers to commit height {height} after crash"),
+            || nodes.iter().all(|n| n.committed_height() >= height),
+            Duration::from_secs(60),
+            &nodes,
+            2,
+            None,
+        )
+        .await;
+        // Exercise the actual bounded journal-to-sync page conversion on
+        // each live source. Empty history and a failed read are distinct;
+        // neither can count as evidence that the source can serve this page.
+        for node in &nodes {
+            assert_eq!(
+                rejoin_trace::local_history(node, 3, height),
+                rejoin_trace::LocalHistory::Values((height - 2) as usize),
+                "live peer cannot serve the post-crash history page"
+            );
+        }
+    }
+
+    // Attach the bounded real-wire observers to live sources before n1 can
+    // request history. Close only n1's test network proxy until its observer
+    // subscribes, so the earliest decoded reply cannot race that attachment.
+    let mut wire = rejoin_trace::WireTrace::new(&keys);
+    for (i, node) in nodes.iter().enumerate() {
+        wire.attach(node, i + 2).await;
+    }
+    let restart_gate = NetGate::new();
+    restart_gate.close();
+    wal_trace.arm();
     let restarted = RoomNode::start(NodeSpec {
         home: base.join("n1"),
         config: node_config(1, 4, base_port),
         node_key: keys[0].clone(),
         validator_sets: sched(set.clone()),
-        held: plan.clone(),
+        held: first_two.clone(),
         genesis: genesis(),
         wal_faults: None,
-        net_gate: None,
+        net_gate: Some(restart_gate.clone()),
     })
     .await;
 
-    // The application-owned store survived the crash: the four spec-held
-    // batch bodies plus the seen-proposal records for the heights the
-    // node voted on reloaded — the WAL restored votes; this restores the
-    // value content.
+    wire.attach(&restarted, 1).await;
+    restart_gate.reopen();
+
+    // The application-owned store survived the crash: both pre-crash
+    // spec-held batch bodies and the seen-proposal records reloaded. The
+    // restarted node does not receive h3-h4 through its spec; those values
+    // must arrive from the live peers as decided history.
     assert!(
-        restarted.loaded.0 >= 4,
+        restarted.loaded.0 >= 2,
         "store/batches must reload retained batches, got {}",
         restarted.loaded.0
     );
@@ -281,19 +375,33 @@ async fn crashed_validator_recovers_and_rejoins() {
         restarted.loaded.1
     );
 
-    wait_for(
+    rejoin_trace::wait_for_rejoin(
         "restarted validator to reach height 4",
         || restarted.committed_height() >= HEIGHTS,
         Duration::from_secs(90),
+        &nodes,
+        2,
+        Some(&restarted),
     )
     .await;
-    wait_for(
+    rejoin_trace::wait_for_rejoin(
         "peers to reach height 4",
         || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
         Duration::from_secs(60),
+        &nodes,
+        2,
+        Some(&restarted),
     )
     .await;
 
+    let wal_path = wal_trace.assert_startup();
+    let verified = wire.assert_causal_page(&restarted, &nodes, &keys).await;
+
+    assert_eq!(
+        rejoin_trace::local_history(&restarted, 3, 4),
+        rejoin_trace::LocalHistory::Values(2),
+        "restarted victim cannot serve its recovered history page"
+    );
     let restarted_state = restarted.adapter.lock().unwrap().frontier().commitment();
     for node in &nodes {
         assert_eq!(
@@ -301,15 +409,138 @@ async fn crashed_validator_recovers_and_rejoins() {
             restarted_state
         );
     }
-    // Each height committed exactly once — the replay of the durable
-    // marker deduplicates rather than re-applying.
+    // Restart must not replace any pre-crash indexed bundle. At every
+    // height, the verified journal chain reaches the same state on all
+    // peers; the h=4 bundle must agree with the live frontier. Different
+    // nodes may retain different quorum certificates, so compare state
+    // commitments across peers rather than their bundle identities.
+    let restarted_chain = rejoin_trace::committed_chain(&restarted.home, HEIGHTS);
+    assert!(
+        restarted_chain[..pre_crash_chain.len()] == pre_crash_chain[..],
+        "restart replaced pre-crash journal history"
+    );
+    assert!(
+        restarted_chain[3].1 == restarted_state,
+        "journal tip differs from the live frontier"
+    );
+    for node in &nodes {
+        let peer_chain = rejoin_trace::committed_chain(&node.home, HEIGHTS);
+        assert!(
+            restarted_chain
+                .iter()
+                .zip(peer_chain.iter())
+                .all(|(restarted, peer)| restarted.1 == peer.1),
+            "journal state differs across validators"
+        );
+    }
+    // Height and journal agreement alone do not show that the application
+    // applied the planned creations only once. Compare the live application
+    // effects with the deterministic signed plan on every validator. The
+    // journal chain above is durable; the stopped-store reopen below checks
+    // recoverable persistence, not the number of apply function calls.
+    let expected_tip = plan.get(&HEIGHTS).unwrap();
+    let scenario = fixture::scenario(8, 16);
+    for node in std::iter::once(&restarted).chain(nodes.iter()) {
+        let adapter = node.adapter.lock().unwrap();
+        let app = adapter.application();
+        let registry = app.registry();
+        assert_eq!(registry.digest(), expected_tip.result_registry);
+        assert_eq!(*app.social().root().as_bytes(), expected_tip.result_social);
+        assert_eq!(
+            registry
+                .accounts()
+                .values()
+                .map(|account| u64::from(account.lifetime_slots))
+                .sum::<u64>(),
+            HEIGHTS,
+            "unexpected cumulative room creations"
+        );
+        for owner in scenario.owners.iter().take(HEIGHTS as usize) {
+            let account = registry.account(owner.id);
+            assert_eq!(
+                account.lifetime_slots, 1,
+                "duplicate creation for planned owner"
+            );
+            assert_eq!(account.spent, 1, "duplicate charge for planned owner");
+        }
+    }
     assert_eq!(restarted.adapter.lock().unwrap().frontier().height, HEIGHTS);
 
-    for node in nodes {
+    // Stop every application task before reading snapshots: `crash` aborts
+    // the task but does not join it, and an in-flight synchronous commit can
+    // otherwise race a supposedly post-crash store read.
+    for mut node in nodes.into_iter().chain(std::iter::once(restarted)) {
+        node.task.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(10), &mut node.task)
+            .await
+            .expect("application task must stop before reading snapshot stores");
         node.crash().await;
     }
-    restarted.crash().await;
+
+    // A fresh adapter must reconstruct the same application state from the
+    // stopped nodes' on-disk journal and snapshot stores, not their live Arcs.
+    // Adapter::open may reconcile retained intents, so this checks recoverable
+    // persistence, not whether both snapshot pins needed no repair.
+    let shared_genesis = genesis();
+    for index in 1..=4 {
+        let app_home = base.join(format!("n{index}/app"));
+        let reopened = Adapter::open(app_home, &shared_genesis)
+            .expect("stopped application must reopen from durable state");
+        assert_eq!(reopened.frontier().height, HEIGHTS);
+        let app = reopened.application();
+        let registry = app.registry();
+        assert_eq!(registry.digest(), expected_tip.result_registry);
+        assert_eq!(*app.social().root().as_bytes(), expected_tip.result_social);
+        assert_eq!(
+            registry
+                .accounts()
+                .values()
+                .map(|account| u64::from(account.lifetime_slots))
+                .sum::<u64>(),
+            HEIGHTS,
+            "unexpected persisted room creations at n{index}"
+        );
+        for owner in scenario.owners.iter().take(HEIGHTS as usize) {
+            let account = registry.account(owner.id);
+            assert_eq!(account.lifetime_slots, 1, "persisted slots at n{index}");
+            assert_eq!(account.spent, 1, "persisted charges at n{index}");
+        }
+    }
+    wire.write_ci_receipt(wal_path, &verified);
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Keep the recovery assertion's expected slot/charge counts tied to
+/// replaying the real signed plan, without requiring network access.
+#[test]
+fn rejoin_plan_creates_one_room_and_charge_per_owner() {
+    let plan = fixture::plan(4, 8, 16);
+    let mut app = vhalla_rooms_consensus::Application::genesis(
+        plan.genesis.archive.clone(),
+        plan.genesis.registry().unwrap(),
+    );
+    for batch in plan.batches.values() {
+        let checked = app.validate(batch).unwrap();
+        app.apply_locally(checked);
+    }
+    let scenario = fixture::scenario(8, 16);
+    assert_eq!(
+        app.registry()
+            .accounts()
+            .values()
+            .map(|account| u64::from(account.lifetime_slots))
+            .sum::<u64>(),
+        4
+    );
+    for owner in scenario.owners.iter().take(4) {
+        let account = app.registry().account(owner.id);
+        assert_eq!(account.lifetime_slots, 1);
+        assert_eq!(account.spent, 1);
+    }
+    assert_eq!(
+        app.registry().digest(),
+        plan.batches.get(&4).unwrap().result_registry
+    );
 }
 
 /// Two validators of a four-validator set cannot form a quorum: neither
