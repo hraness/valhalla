@@ -156,26 +156,32 @@ pub(super) fn committed_chain(path: &Path, through: u64) -> Vec<([u8; 32], [u8; 
 
 fn node(label: &str, node: &RoomNode) {
     let frontier = node.adapter.lock().unwrap().frontier();
-    let acks = node.sink.lock().unwrap();
-    let ack_counts: Vec<_> = (1..=4)
-        .map(|h| {
-            acks.sent
-                .iter()
-                .filter(|m| match m {
-                    vhalla_rooms_consensus::EngineMsg::CommitAck { height } => *height == h,
-                    vhalla_rooms_consensus::EngineMsg::NextHeightReply { height } => {
-                        height.checked_sub(1) == Some(h)
-                    }
-                })
-                .count()
-        })
-        .collect();
+    // Snapshot the ack evidence without holding the sink mutex across other
+    // locks, logging, or filesystem reads; the engine needs it to record acks.
+    let (ack_counts, ack_total) = {
+        let acks = node.sink.lock().unwrap();
+        let counts: Vec<_> = (1..=4)
+            .map(|h| {
+                acks.sent
+                    .iter()
+                    .filter(|m| match m {
+                        vhalla_rooms_consensus::EngineMsg::CommitAck { height } => *height == h,
+                        vhalla_rooms_consensus::EngineMsg::NextHeightReply { height } => {
+                            height.checked_sub(1) == Some(h)
+                        }
+                    })
+                    .count()
+            })
+            .collect();
+        (counts, acks.sent.len())
+    };
+    let resupplied = *node.resupplied.lock().unwrap();
     println!(
         "rejoin {label}: frontier={} commitment={} ack_counts={ack_counts:?} ack_total={} resupplied={} loaded={:?} app_done={} engine_done={}",
         frontier.height,
         hex(&frontier.commitment()[..8]),
-        acks.sent.len(),
-        *node.resupplied.lock().unwrap(),
+        ack_total,
+        resupplied,
         node.loaded,
         node.task.is_finished(),
         node._engine.handle.is_finished()
