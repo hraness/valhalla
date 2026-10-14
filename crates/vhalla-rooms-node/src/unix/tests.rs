@@ -293,6 +293,17 @@ async fn crashed_validator_recovers_and_rejoins() {
         "victim must stop at h2 before any post-crash batches are released"
     );
     let pre_crash_chain = rejoin_trace::committed_chain(&stopped_home, pre_crash_height);
+    // The victim's stopped home must not already contain the h3-h4 bodies.
+    // Test only the two planned ids; no directory listing or WAL mutation.
+    for height in 3..=HEIGHTS {
+        let body = stopped_home
+            .join("store/batches")
+            .join(hex(&plan[&height].value_id()));
+        assert!(
+            matches!(std::fs::metadata(body), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+            "victim had a post-crash batch body before the peers advanced"
+        );
+    }
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // The three live validators still form a quorum. Release each remaining
@@ -311,6 +322,16 @@ async fn crashed_validator_recovers_and_rejoins() {
             None,
         )
         .await;
+        // Exercise the actual bounded journal-to-sync page conversion on
+        // each live source. Empty history and a failed read are distinct;
+        // neither can count as evidence that the source can serve this page.
+        for node in &nodes {
+            assert_eq!(
+                rejoin_trace::local_history(node, 3, height),
+                rejoin_trace::LocalHistory::Values((height - 2) as usize),
+                "live peer cannot serve the post-crash history page"
+            );
+        }
     }
 
     let restarted = RoomNode::start(NodeSpec {
@@ -359,6 +380,11 @@ async fn crashed_validator_recovers_and_rejoins() {
     )
     .await;
 
+    assert_eq!(
+        rejoin_trace::local_history(&restarted, 3, 4),
+        rejoin_trace::LocalHistory::Values(2),
+        "restarted victim cannot serve its recovered history page"
+    );
     let restarted_state = restarted.adapter.lock().unwrap().frontier().commitment();
     for node in &nodes {
         assert_eq!(

@@ -2,6 +2,7 @@
 //! WAL contents or print keys, batch bodies, or absolute home paths.
 
 use super::*;
+use std::io::Read;
 
 // Only this test's four fixed listener ports are inspected. /proc/net/tcp*
 // reports TCP sockets from the network namespace, not authenticated Malachite
@@ -61,7 +62,6 @@ impl SocketSummary {
 
 #[cfg(target_os = "linux")]
 fn socket_trace() -> String {
-    use std::io::Read;
     const MAX_TABLE: u64 = 1_048_576;
     let mut summary = SocketSummary::default();
     let mut families = 0;
@@ -93,6 +93,18 @@ fn socket_trace() -> String {
     "tcp=unavailable (not Linux)".into()
 }
 
+// A marker can change between metadata and read. Cap the diagnostic read at
+// one byte past the expected format so even a replaced file stays bounded.
+fn wal_marker_matches(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut bytes = Vec::with_capacity(WAL_FORMAT.len() + 1);
+    file.take((WAL_FORMAT.len() + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_ok_and(|_| bytes.as_slice() == WAL_FORMAT)
+}
+
 fn home(label: &str, path: &Path) {
     // `recover()` mutates journal residue; NEVER call it on a live writer.
     let journal = vhalla_journal::Journal::new(path.join("app/journal"), vhalla_journal::FsStore);
@@ -106,8 +118,7 @@ fn home(label: &str, path: &Path) {
     let wal_bytes = std::fs::metadata(path.join("wal/consensus.wal"))
         .map(|m| m.len())
         .ok();
-    let wal_format_ok = std::fs::metadata(path.join("wal/FORMAT")).is_ok_and(|m| m.len() == 4)
-        && std::fs::read(path.join("wal/FORMAT")).is_ok_and(|bytes| bytes == WAL_FORMAT);
+    let wal_format_ok = wal_marker_matches(&path.join("wal/FORMAT"));
     // 4097 signals an overflow; no unbounded listing or filename disclosure.
     let count = |dir: &str| {
         std::fs::read_dir(path.join(dir))
@@ -154,6 +165,31 @@ pub(super) fn committed_chain(path: &Path, through: u64) -> Vec<([u8; 32], [u8; 
     chain
 }
 
+/// A read-only call to the same journal-backed page builder the sync host
+/// uses. This establishes local serveability, NOT that a peer requested or
+/// received a page. Never print the error: it can contain a home path.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum LocalHistory {
+    Empty,
+    Values(usize),
+    Unavailable,
+}
+
+fn classify_history<T, E>(result: Result<Vec<T>, E>) -> LocalHistory {
+    match result {
+        Ok(values) if values.is_empty() => LocalHistory::Empty,
+        Ok(values) => LocalHistory::Values(values.len()),
+        Err(_) => LocalHistory::Unavailable,
+    }
+}
+
+pub(super) fn local_history(node: &RoomNode, start: u64, end: u64) -> LocalHistory {
+    // read_decided_range clamps to the applied frontier, bounds the page to
+    // 32 values / 2 MiB, and never invokes journal recovery or changes files.
+    let adapter = node.adapter.lock().unwrap();
+    classify_history(read_decided_range(&adapter, start, end))
+}
+
 fn node(label: &str, node: &RoomNode) {
     let frontier = node.adapter.lock().unwrap().frontier();
     // Snapshot the ack evidence without holding the sink mutex across other
@@ -176,8 +212,11 @@ fn node(label: &str, node: &RoomNode) {
         (counts, acks.sent.len())
     };
     let resupplied = *node.resupplied.lock().unwrap();
+    // The fixed h3-h4 window reports Empty and Unavailable separately. A
+    // positive count is source readiness, not proof of wire delivery.
+    let history_h3_h4 = local_history(node, 3, 4);
     println!(
-        "rejoin {label}: frontier={} commitment={} ack_counts={ack_counts:?} ack_total={} resupplied={} loaded={:?} app_done={} engine_done={}",
+        "rejoin {label}: frontier={} commitment={} ack_counts={ack_counts:?} ack_total={} resupplied={} loaded={:?} local_history_h3_h4={history_h3_h4:?} app_done={} engine_done={}",
         frontier.height,
         hex(&frontier.commitment()[..8]),
         ack_total,
@@ -243,6 +282,36 @@ pub(super) async fn wait_for_rejoin<F: Fn() -> bool>(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+#[test]
+fn wal_marker_diagnostic_rejects_missing_or_trailing_bytes() {
+    let dir = fixture("rejoin-wal-marker");
+    let marker = dir.join("FORMAT");
+    assert!(!wal_marker_matches(&marker));
+    std::fs::write(&marker, WAL_FORMAT).unwrap();
+    assert!(wal_marker_matches(&marker));
+    let mut extended = WAL_FORMAT.to_vec();
+    extended.push(b'X');
+    std::fs::write(&marker, extended).unwrap();
+    assert!(!wal_marker_matches(&marker));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn local_history_distinguishes_empty_values_and_unavailable_without_error_details() {
+    assert_eq!(
+        classify_history(Ok::<Vec<u8>, &str>(vec![])),
+        LocalHistory::Empty
+    );
+    assert_eq!(
+        classify_history(Ok::<Vec<u8>, &str>(vec![1, 2])),
+        LocalHistory::Values(2)
+    );
+    assert_eq!(
+        classify_history(Err::<Vec<u8>, &str>("secret absolute home path")),
+        LocalHistory::Unavailable
+    );
 }
 
 #[test]
