@@ -722,7 +722,10 @@ impl WireTrace {
 
 impl Drop for WireTrace {
     fn drop(&mut self) {
-        let snapshot = self.events.lock().unwrap();
+        let snapshot = self
+            .events
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         // Failure snapshots also include this bounded, redacted wire ledger.
         println!(
             "rejoin wire final={:?} overflow={}",
@@ -736,7 +739,8 @@ impl Drop for WireTrace {
 
 // A minimal test-only tracing subscriber for the pinned consensus actor. It
 // never formats arbitrary log fields (WAL entries can contain private data).
-// It records only whitelisted startup branch names under n1's node span.
+// It records only whitelisted startup branches at h3 after all live peers
+// reached h4; the restarted n1 is the sole actor starting that height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WalFact {
     EmptyFetch,
@@ -760,18 +764,18 @@ thread_local! {
 }
 
 struct SafeFields {
-    moniker: Option<String>,
+    height: Option<String>,
     message: Option<String>,
     new: Option<String>,
 }
 
 impl tracing::field::Visit for SafeFields {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if matches!(field.name(), "moniker" | "message" | "new") {
+        if matches!(field.name(), "height" | "message" | "new") {
             let value = format!("{value:?}");
             if value.len() <= 128 {
                 match field.name() {
-                    "moniker" => self.moniker = Some(value),
+                    "height" => self.height = Some(value),
                     "message" => self.message = Some(value),
                     "new" => self.new = Some(value),
                     _ => {}
@@ -783,7 +787,7 @@ impl tracing::field::Visit for SafeFields {
 
 struct WalSubscriber {
     next: std::sync::atomic::AtomicU64,
-    n1_spans: std::sync::Mutex<std::collections::HashSet<u64>>,
+    height3_spans: std::sync::Mutex<std::collections::HashSet<u64>>,
     armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     events: std::sync::Arc<std::sync::Mutex<WalEvents>>,
 }
@@ -797,24 +801,25 @@ impl tracing::Subscriber for WalSubscriber {
     fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let mut fields = SafeFields {
-            moniker: None,
+            height: None,
             message: None,
             new: None,
         };
-        if attrs.metadata().name() == "node" {
-            attrs.record(&mut fields);
-        }
+        attrs.record(&mut fields);
         let parent = attrs
             .parent()
             .map(tracing::span::Id::into_u64)
             .or_else(|| WAL_SPAN_STACK.with(|stack| stack.borrow().last().copied()));
-        if fields
-            .moniker
+        let height_is_three = fields
+            .height
             .as_deref()
-            .is_some_and(|v| v.trim_matches('"') == "room-node-1")
-            || parent.is_some_and(|parent| self.n1_spans.lock().unwrap().contains(&parent))
+            .is_some_and(|v| v.trim_matches('"') == "3");
+        if height_is_three
+            || (fields.height.is_none()
+                && parent
+                    .is_some_and(|parent| self.height3_spans.lock().unwrap().contains(&parent)))
         {
-            self.n1_spans.lock().unwrap().insert(id);
+            self.height3_spans.lock().unwrap().insert(id);
         }
         tracing::span::Id::from_u64(id)
     }
@@ -828,15 +833,21 @@ impl tracing::Subscriber for WalSubscriber {
             .parent()
             .map(tracing::span::Id::into_u64)
             .or_else(|| WAL_SPAN_STACK.with(|stack| stack.borrow().last().copied()));
-        if !parent.is_some_and(|parent| self.n1_spans.lock().unwrap().contains(&parent)) {
-            return;
-        }
         let mut fields = SafeFields {
-            moniker: None,
+            height: None,
             message: None,
             new: None,
         };
         event.record(&mut fields);
+        let height_is_three = fields
+            .height
+            .as_deref()
+            .is_some_and(|v| v.trim_matches('"') == "3");
+        if !height_is_three
+            && !parent.is_some_and(|parent| self.height3_spans.lock().unwrap().contains(&parent))
+        {
+            return;
+        }
         let message = fields.message.as_deref().unwrap_or("").trim_matches('"');
         let fact = if message == "No WAL entries to replay" {
             Some(WalFact::EmptyFetch)
@@ -892,7 +903,7 @@ impl WalTrace {
         let armed: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
         tracing::subscriber::set_global_default(WalSubscriber {
             next: Default::default(),
-            n1_spans: Default::default(),
+            height3_spans: Default::default(),
             armed: armed.clone(),
             events: events.clone(),
         })
@@ -903,18 +914,17 @@ impl WalTrace {
         self.armed.store(true, Ordering::SeqCst);
     }
     pub(super) fn assert_startup(&self) {
-        let trace = self.events.lock().unwrap();
-        println!(
-            "rejoin n1 WAL startup facts={:?} overflow={}",
-            trace.facts, trace.overflow
-        );
-        assert_eq!(trace.overflow, 0, "WAL startup trace saturated");
-        let first_running = trace
-            .facts
+        let (facts, overflow) = {
+            let trace = self.events.lock().unwrap();
+            (trace.facts.clone(), trace.overflow)
+        };
+        println!("rejoin n1 WAL startup facts={facts:?} overflow={overflow}");
+        assert_eq!(overflow, 0, "WAL startup trace saturated");
+        let first_running = facts
             .iter()
             .position(|f| *f == WalFact::Running)
             .expect("restarted n1 never reached consensus Running");
-        let startup = &trace.facts[..=first_running];
+        let startup = &facts[..=first_running];
         assert!(
             !startup.contains(&WalFact::Error),
             "restarted n1 reported consensus error"
@@ -938,7 +948,10 @@ impl WalTrace {
 
 impl Drop for WalTrace {
     fn drop(&mut self) {
-        let trace = self.events.lock().unwrap();
+        let trace = self
+            .events
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         println!(
             "rejoin n1 WAL final={:?} overflow={}",
             trace.facts, trace.overflow
@@ -953,19 +966,18 @@ fn wal_subscriber_scopes_startup_and_never_records_arbitrary_messages() {
     let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let subscriber = WalSubscriber {
         next: Default::default(),
-        n1_spans: Default::default(),
+        height3_spans: Default::default(),
         armed: armed.clone(),
         events: events.clone(),
     };
     let dispatch = tracing::Dispatch::new(subscriber);
     tracing::dispatcher::with_default(&dispatch, || {
-        let other = tracing::error_span!("node", moniker = %"room-node-2");
+        let other = tracing::error_span!("consensus", height = %4);
         {
             let _guard = other.enter();
             tracing::debug!(target: "consensus", "No WAL entries to replay");
         }
-        let n1 = tracing::error_span!("node", moniker = %"room-node-1");
-        let consensus = tracing::error_span!(parent: &n1, "consensus");
+        let consensus = tracing::error_span!("consensus", height = %3);
         let _guard = consensus.enter();
         tracing::debug!(target: "consensus", "No WAL entries to replay");
         tracing::info!(target: "consensus", prev = ?"Recovering", new = ?"Running", "Phase transition");
