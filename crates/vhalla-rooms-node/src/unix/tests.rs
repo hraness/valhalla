@@ -259,7 +259,14 @@ async fn crashed_validator_recovers_and_rejoins() {
     // frontier sample can miss a height committed between sampling and crash.
     // A run that finished h4 before the crash cannot prove h4 recovery.
     let stopped_home = base.join("n1");
-    let victim = nodes.remove(0);
+    let mut victim = nodes.remove(0);
+    // `crash` aborts the app loop but does not join its task. A synchronous
+    // journal write may still finish after it returns, so wait for the task
+    // to stop before treating the journal markers as a pre-restart frontier.
+    victim.task.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(10), &mut victim.task)
+        .await
+        .expect("application task must stop before inspecting the journal");
     victim.crash().await;
     rejoin_trace::after_crash(&nodes, &stopped_home);
     let journal =
