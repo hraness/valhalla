@@ -1251,6 +1251,30 @@ physical crash durability, a WASM runtime test or production activation. Final
 candidate-tree validation and exact-PR-head/post-main `Required` belong to
 delivery; independent witness and physical-crash qualification remain separate.
 
+**Agent-decided, owner may revisit (2026-10-14): same-generation
+protected-intent fork refusal.** The test-only `protected_file` regression
+`retained_intent_same_generation_fork_refuses_without_writes` prepares two
+different signed, certified descendants A and B of the same predecessor, with
+identical generation and height but different complete pins. It stages B as a
+third immutable bundle within the Unix store's capacity, then loses the host-CAS
+reply after the local pin and deterministic witness reach A. Replacing only the
+retained intent's target with canonical B bytes remains structurally decodable.
+Reopen, `reconcile`, and `advance` for either A or B refuse `Conflict`, with no
+second witness CAS or change to any file name, contents, type or mode beyond the
+deliberate intent replacement. Restoring exactly A's intent reconciles the
+original certified target and verified predecessor without another CAS; the
+staged B bundle remains non-authorizing data. Rust 1.98.1 locked native-store
+focused test passed 1/1; the full `protected_file` suite passed 8/8 and the
+`protected_commit_model` suite 4/4. Final candidate-tree and PR-head gates
+remain with delivery.
+
+This does **not** authenticate local intent bytes: a tampered local-only intent
+while both pins remain at the predecessor is not proven detectable. The witness
+is a deterministic test double, not independently held custody. No physical
+power-loss durability, newest-at-completion, browser/WASM runtime parity or
+production activation follows; independent witness and physical-crash
+qualifications remain separate.
+
 ### Trust-rotation reference and remaining experiments
 
 **Agent-decided, owner may revisit (2026-10-12):** the standalone checkpoint

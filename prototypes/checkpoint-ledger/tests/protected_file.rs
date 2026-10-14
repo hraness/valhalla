@@ -752,6 +752,114 @@ fn retained_intent_corruption_refuses_without_fallback_then_exact_bytes_recover(
     }
 }
 
+#[test]
+fn retained_intent_same_generation_fork_refuses_without_writes() {
+    // A lost host-CAS reply leaves the local pin and deterministic witness at A.
+    // A signed fork B is valid data with the same generation and height, not
+    // permission to rewrite the retained intent or acknowledge another target.
+    let sandbox = Sandbox::new();
+    let path = sandbox.store();
+    let mut store = FileStore::create_new(&path, 3).unwrap();
+    let (mut model, base) = provision(&mut store);
+    let original = next(&mut model, &base, b"original target");
+    let snapshot = model.snapshot();
+    let mut fork_model = CertifiedLedger::new(RealmId(1), Epoch(7), trust(), 64).unwrap();
+    certify(&mut fork_model, b"base");
+    let fork = next(&mut fork_model, &base, b"different signed target");
+    assert_eq!(original.pin().generation(), fork.pin().generation());
+    assert_eq!(
+        original.pin().checkpoint().height,
+        fork.pin().checkpoint().height
+    );
+    assert_ne!(original.pin(), fork.pin());
+    assert_ne!(original.pin().bundle(), fork.pin().bundle());
+
+    // Retain B as a third immutable bundle, inside the declared capacity. It
+    // is non-authorizing data; neither the local nor witnessed pin selects it.
+    let mut staged_fork = StagingStore {
+        inner: store,
+        cut: true,
+    };
+    assert!(matches!(
+        commit(&mut staged_fork, &fork),
+        Err(StoreError::Indeterminate(FileError::Busy))
+    ));
+    let mut store = staged_fork.inner;
+    let fork_bytes = store.read_bundle(fork.pin().bundle()).unwrap();
+    assert_eq!(bundle_id(&fork_bytes), fork.pin().bundle());
+    assert_eq!(store.read_pin().unwrap(), Some(base.clone()));
+    assert!(store.read_intent().unwrap().is_none());
+    let mut witness = Witness::new(base.clone());
+    witness.lose_reply = true;
+    assert!(matches!(
+        advance(&mut store, &mut witness, &owner(1), &original, trust(), 64),
+        Err(Error::Witness(Fault::LostReply))
+    ));
+    assert_eq!(witness.durable, *original.pin());
+    assert_eq!(witness.calls, 1);
+    assert_eq!(store.read_pin().unwrap(), Some(original.pin().clone()));
+    let original_intent = store.read_intent().unwrap().unwrap();
+    assert_eq!(
+        Intent::decode(&original_intent).unwrap().predecessor(),
+        &base
+    );
+    assert_eq!(
+        Intent::decode(&original_intent).unwrap().target(),
+        original.pin()
+    );
+    let original_image = disk_image(&path);
+    drop(store);
+
+    // Change ONLY the intent's canonical target pin. Structural decoding is
+    // not authentication; the independently captured full pin still names A.
+    let mut changed = original_intent.clone();
+    changed[INTENT_BYTES - PIN_BYTES..].copy_from_slice(&fork.pin().encode());
+    assert_ne!(changed, original_intent);
+    let decoded = Intent::decode(&changed).unwrap();
+    assert_eq!(decoded.predecessor(), &base);
+    assert_eq!(decoded.target(), fork.pin());
+    fs::write(path.join("intent"), &changed).unwrap();
+    let changed_image = disk_image(&path);
+    let mut store = FileStore::open(&path, 3).unwrap();
+    unchanged(&path, &changed_image, &witness, original.pin(), 1);
+    expect_refusal(
+        reconcile(&mut store, &mut witness, &owner(1), trust(), 64),
+        Refusal::Conflict,
+    );
+    unchanged(&path, &changed_image, &witness, original.pin(), 1);
+    for candidate in [&original, &fork] {
+        expect_refusal(
+            advance(&mut store, &mut witness, &owner(1), candidate, trust(), 64),
+            Refusal::Conflict,
+        );
+        unchanged(&path, &changed_image, &witness, original.pin(), 1);
+        assert_eq!(store.read_pin().unwrap(), Some(original.pin().clone()));
+    }
+    assert_eq!(store.read_intent().unwrap(), Some(changed));
+    assert_eq!(store.read_bundle(fork.pin().bundle()).unwrap(), fork_bytes);
+    drop(store);
+
+    // Exact external restoration of A's retained intent allows only A to
+    // reconcile; no second host CAS, fork acknowledgement, or lost bundle.
+    fs::write(path.join("intent"), &original_intent).unwrap();
+    assert_eq!(disk_image(&path), original_image);
+    let mut store = FileStore::open(&path, 3).unwrap();
+    assert_eq!(
+        reconcile(&mut store, &mut witness, &owner(1), trust(), 64)
+            .unwrap()
+            .snapshot(),
+        snapshot
+    );
+    assert_eq!(witness.calls, 1);
+    assert_eq!(witness.durable, *original.pin());
+    assert_eq!(store.read_pin().unwrap(), Some(original.pin().clone()));
+    assert_eq!(store.read_intent().unwrap(), Some(original_intent));
+    assert_eq!(store.read_bundle(fork.pin().bundle()).unwrap(), fork_bytes);
+    assert_eq!(disk_image(&path), original_image);
+    // The witness is a test double; no independent custody, physical crash
+    // durability, or newest-at-completion property is established here.
+}
+
 fn hex(bytes: [u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
