@@ -224,6 +224,14 @@ async fn late_joiner_syncs_and_commits() {
 async fn crashed_validator_recovers_and_rejoins() {
     const HEIGHTS: u64 = 4;
     let plan = batch_plan(HEIGHTS);
+    // Stage h3-h4 only after the victim stops. Otherwise the four nodes can
+    // complete the entire plan between the h2 observation and the crash,
+    // making post-restart h4 progress impossible to demonstrate.
+    let first_two = plan
+        .iter()
+        .filter(|(height, _)| **height <= 2)
+        .map(|(height, batch)| (*height, batch.clone()))
+        .collect::<BTreeMap<_, _>>();
     let (keys, set) = validators(4);
     let base = fixture("crash");
     let base_port = 27300usize;
@@ -236,7 +244,7 @@ async fn crashed_validator_recovers_and_rejoins() {
                 config: node_config(i + 1, 4, base_port),
                 node_key: key.clone(),
                 validator_sets: sched(set.clone()),
-                held: plan.clone(),
+                held: first_two.clone(),
                 genesis: genesis(),
                 wal_faults: None,
                 net_gate: None,
@@ -280,31 +288,49 @@ async fn crashed_validator_recovers_and_rejoins() {
                 .is_some()
         })
         .expect("victim committed height 2 before crash");
-    assert!(
-        pre_crash_height < HEIGHTS,
-        "victim committed h4 before crash; this run cannot prove post-restart h4 recovery"
+    assert_eq!(
+        pre_crash_height, 2,
+        "victim must stop at h2 before any post-crash batches are released"
     );
     let pre_crash_chain = rejoin_trace::committed_chain(&stopped_home, pre_crash_height);
     tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // The three live validators still form a quorum. Release each remaining
+    // planned batch only at its actual parent frontier, then let the crashed
+    // validator catch up from their decided history on the same home.
+    for height in 3..=HEIGHTS {
+        for node in &nodes {
+            node.submit(plan.get(&height).unwrap().clone()).await;
+        }
+        rejoin_trace::wait_for_rejoin(
+            &format!("live peers to commit height {height} after crash"),
+            || nodes.iter().all(|n| n.committed_height() >= height),
+            Duration::from_secs(60),
+            &nodes,
+            2,
+            None,
+        )
+        .await;
+    }
 
     let restarted = RoomNode::start(NodeSpec {
         home: base.join("n1"),
         config: node_config(1, 4, base_port),
         node_key: keys[0].clone(),
         validator_sets: sched(set.clone()),
-        held: plan.clone(),
+        held: first_two.clone(),
         genesis: genesis(),
         wal_faults: None,
         net_gate: None,
     })
     .await;
 
-    // The application-owned store survived the crash: the four spec-held
-    // batch bodies plus the seen-proposal records for the heights the
-    // node voted on reloaded — the WAL restored votes; this restores the
-    // value content.
+    // The application-owned store survived the crash: both pre-crash
+    // spec-held batch bodies and the seen-proposal records reloaded. The
+    // restarted node does not receive h3-h4 through its spec; those values
+    // must arrive from the live peers as decided history.
     assert!(
-        restarted.loaded.0 >= 4,
+        restarted.loaded.0 >= 2,
         "store/batches must reload retained batches, got {}",
         restarted.loaded.0
     );
