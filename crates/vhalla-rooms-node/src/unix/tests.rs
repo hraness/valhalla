@@ -394,8 +394,8 @@ async fn crashed_validator_recovers_and_rejoins() {
     )
     .await;
 
-    wal_trace.assert_startup();
-    wire.assert_causal_page(&restarted, &nodes, &keys).await;
+    let wal_path = wal_trace.assert_startup();
+    let verified = wire.assert_causal_page(&restarted, &nodes, &keys).await;
 
     assert_eq!(
         rejoin_trace::local_history(&restarted, 3, 4),
@@ -506,6 +506,7 @@ async fn crashed_validator_recovers_and_rejoins() {
             assert_eq!(account.spent, 1, "persisted charges at n{index}");
         }
     }
+    wire.write_ci_receipt(wal_path, &verified);
     let _ = std::fs::remove_dir_all(&base);
 }
 

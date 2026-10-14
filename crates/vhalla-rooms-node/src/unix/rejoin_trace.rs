@@ -658,7 +658,7 @@ impl WireTrace {
         restarted: &RoomNode,
         sources: &[RoomNode],
         keys: &[PrivateKey],
-    ) {
+    ) -> Vec<usize> {
         let responders = {
             let snapshot = self.events.lock().unwrap();
             println!(
@@ -689,6 +689,7 @@ impl WireTrace {
             responders
         };
         let victim_dump = self.dump(restarted).await;
+        let mut verified = Vec::new();
         for source in responders {
             let source_key = keys[source - 1].public_key();
             let source_peer =
@@ -716,7 +717,39 @@ impl WireTrace {
                 "decided-page source lacks the victim's verified validator proof"
             );
             println!("rejoin verified peer lifecycle: n1<->n{source} validator proofs match");
+            verified.push(source);
         }
+        verified
+    }
+
+    // Nextest captures passing tests' stdout. Write the same capped, redacted
+    // test facts to the GitHub job summary ONLY after all recovery assertions
+    // pass; do not report the prior intermittent timeout as explained.
+    pub(super) fn write_ci_receipt(&self, wal_path: &str, verified: &[usize]) {
+        if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+            return;
+        }
+        let path = std::env::var_os("GITHUB_STEP_SUMMARY")
+            .expect("GitHub Actions must provide its job summary path");
+        let events = self.events.lock().unwrap();
+        assert_eq!(events.overflow, 0, "wire summary cannot omit events");
+        let facts = format!("{:?}", events.facts);
+        assert!(facts.len() <= 16_384, "redacted wire summary too long");
+        let receipt = format!(
+            "\n### Rooms-node crash/rejoin diagnostic (test-only)\n\n\
+             - Restarted n1 WAL startup at h3: {wal_path}.\n\
+             - Source/victim pairs with matching verified validator proofs: {verified:?}.\n\
+             - Wire facts (node numbers and heights only): `{facts}`.\n\
+             - Same-home n1 stopped at h2 without preloaded h3–h4 bodies, then reached h4; journal prefix, peer state, planned effects, and stopped-store reopen matched.\n\
+             - A passing run does not explain the earlier intermittent h4 timeout or prove application-call count.\n"
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open GitHub test summary");
+        std::io::Write::write_all(&mut file, receipt.as_bytes())
+            .expect("write bounded GitHub test summary");
     }
 }
 
@@ -764,6 +797,7 @@ thread_local! {
 }
 
 struct SafeFields {
+    capture_text: bool,
     height: Option<String>,
     message: Option<String>,
     new: Option<String>,
@@ -771,7 +805,9 @@ struct SafeFields {
 
 impl tracing::field::Visit for SafeFields {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if matches!(field.name(), "height" | "message" | "new") {
+        if field.name() == "height"
+            || (self.capture_text && matches!(field.name(), "message" | "new"))
+        {
             let value = format!("{value:?}");
             if value.len() <= 128 {
                 match field.name() {
@@ -801,6 +837,7 @@ impl tracing::Subscriber for WalSubscriber {
     fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let mut fields = SafeFields {
+            capture_text: false,
             height: None,
             message: None,
             new: None,
@@ -833,7 +870,23 @@ impl tracing::Subscriber for WalSubscriber {
             .parent()
             .map(tracing::span::Id::into_u64)
             .or_else(|| WAL_SPAN_STACK.with(|stack| stack.borrow().last().copied()));
+        // At this pinned Malachite revision, only these consensus.rs
+        // callsites contain fixed startup labels or bounded entry counts.
+        // Never format arbitrary consensus messages (they may contain WAL
+        // entry bytes or home paths), even temporarily.
+        let meta = event.metadata();
+        let pinned_startup = meta
+            .file()
+            .is_some_and(|f| f.ends_with("/engine/src/consensus.rs"))
+            && meta
+                .line()
+                .is_some_and(|line| [314, 529, 820, 945, 952, 980, 1143].contains(&line));
+        let synthetic_test = meta
+            .file()
+            .is_some_and(|f| f.ends_with("/unix/rejoin_trace.rs"))
+            && meta.target() == "consensus";
         let mut fields = SafeFields {
+            capture_text: pinned_startup || synthetic_test,
             height: None,
             message: None,
             new: None,
@@ -913,7 +966,7 @@ impl WalTrace {
     pub(super) fn arm(&self) {
         self.armed.store(true, Ordering::SeqCst);
     }
-    pub(super) fn assert_startup(&self) {
+    pub(super) fn assert_startup(&self) -> &'static str {
         let (facts, overflow) = {
             let trace = self.events.lock().unwrap();
             (trace.facts.clone(), trace.overflow)
@@ -943,6 +996,7 @@ impl WalTrace {
             panic!("restarted n1 WAL startup path not established: {startup:?}")
         };
         println!("rejoin n1 WAL startup path={path}");
+        path
     }
 }
 
