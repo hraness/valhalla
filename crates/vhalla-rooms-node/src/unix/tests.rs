@@ -222,6 +222,7 @@ async fn late_joiner_syncs_and_commits() {
 /// journal frontier, and the node rejoins progress without double-apply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn crashed_validator_recovers_and_rejoins() {
+    let wal_trace = rejoin_trace::WalTrace::install();
     const HEIGHTS: u64 = 4;
     let plan = batch_plan(HEIGHTS);
     // Stage h3-h4 only after the victim stops. Otherwise the four nodes can
@@ -247,7 +248,7 @@ async fn crashed_validator_recovers_and_rejoins() {
                 held: first_two.clone(),
                 genesis: genesis(),
                 wal_faults: None,
-                net_gate: None,
+                net_gate: Some(NetGate::new()),
             })
             .await,
         );
@@ -334,6 +335,16 @@ async fn crashed_validator_recovers_and_rejoins() {
         }
     }
 
+    // Attach the bounded real-wire observers to live sources before n1 can
+    // request history. Close only n1's test network proxy until its observer
+    // subscribes, so the earliest decoded reply cannot race that attachment.
+    let mut wire = rejoin_trace::WireTrace::new(&keys);
+    for (i, node) in nodes.iter().enumerate() {
+        wire.attach(node, i + 2).await;
+    }
+    let restart_gate = NetGate::new();
+    restart_gate.close();
+    wal_trace.arm();
     let restarted = RoomNode::start(NodeSpec {
         home: base.join("n1"),
         config: node_config(1, 4, base_port),
@@ -342,9 +353,12 @@ async fn crashed_validator_recovers_and_rejoins() {
         held: first_two.clone(),
         genesis: genesis(),
         wal_faults: None,
-        net_gate: None,
+        net_gate: Some(restart_gate.clone()),
     })
     .await;
+
+    wire.attach(&restarted, 1).await;
+    restart_gate.reopen();
 
     // The application-owned store survived the crash: both pre-crash
     // spec-held batch bodies and the seen-proposal records reloaded. The
@@ -379,6 +393,9 @@ async fn crashed_validator_recovers_and_rejoins() {
         Some(&restarted),
     )
     .await;
+
+    wal_trace.assert_startup();
+    wire.assert_causal_page(&restarted, &nodes, &keys).await;
 
     assert_eq!(
         rejoin_trace::local_history(&restarted, 3, 4),

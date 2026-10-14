@@ -412,3 +412,568 @@ async fn expired_predicate_cannot_pass() {
     // Even a true predicate cannot turn an expired wait into a green result.
     wait_for_rejoin("expired predicate", || true, Duration::ZERO, &[], 1, None).await;
 }
+
+// The real network actor's output port, not a local journal read, reports
+// decoded sync requests and replies. Record only test node indices, bounded
+// ranges and page lengths; no peer IDs, raw values, keys, paths or errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WireFact {
+    Connected {
+        node: usize,
+        peer: usize,
+    },
+    Disconnected {
+        node: usize,
+        peer: usize,
+    },
+    Request {
+        node: usize,
+        peer: usize,
+        start: u64,
+        end: u64,
+    },
+    Page {
+        node: usize,
+        peer: usize,
+        start: u64,
+        heights: Vec<u64>,
+    },
+    Empty {
+        node: usize,
+        peer: usize,
+        start: u64,
+    },
+    Unavailable {
+        node: usize,
+        peer: usize,
+    },
+    Failed {
+        node: usize,
+        peer: usize,
+    },
+}
+
+#[derive(Default)]
+struct WireEvents {
+    facts: Vec<WireFact>,
+    overflow: usize,
+}
+
+struct WireCollector {
+    node: usize,
+    peers: std::sync::Arc<Vec<PeerId>>,
+    events: std::sync::Arc<std::sync::Mutex<WireEvents>>,
+}
+
+#[ractor::async_trait]
+impl Actor for WireCollector {
+    type Msg = NetworkEvent<RoomContext>;
+    type State = Self;
+    type Arguments = Self;
+
+    async fn pre_start(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        args: Self::Arguments,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        Ok(args)
+    }
+
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        msg: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        use arc_malachitebft_sync::{Request, Response};
+        let peer_of = |peer: PeerId| state.peers.iter().position(|p| *p == peer).map(|i| i + 1);
+        let fact = match msg {
+            NetworkEvent::PeerConnected(peer) => peer_of(peer).map(|peer| WireFact::Connected {
+                node: state.node,
+                peer,
+            }),
+            NetworkEvent::PeerDisconnected(peer) => {
+                peer_of(peer).map(|peer| WireFact::Disconnected {
+                    node: state.node,
+                    peer,
+                })
+            }
+            NetworkEvent::SyncRequest(_, peer, Request::ValueRequest(request)) => peer_of(peer)
+                .map(|peer| WireFact::Request {
+                    node: state.node,
+                    peer,
+                    start: request.range.start().as_u64(),
+                    end: request.range.end().as_u64(),
+                }),
+            NetworkEvent::SyncResponse(_, peer, Some(Response::ValueResponse(response))) => {
+                peer_of(peer).map(|peer| {
+                    let start = response.start_height.as_u64();
+                    if response.values.is_empty() {
+                        WireFact::Empty {
+                            node: state.node,
+                            peer,
+                            start,
+                        }
+                    } else {
+                        WireFact::Page {
+                            node: state.node,
+                            peer,
+                            start,
+                            heights: response
+                                .values
+                                .iter()
+                                .take(32)
+                                .map(|v| v.height().as_u64())
+                                .collect(),
+                        }
+                    }
+                })
+            }
+            NetworkEvent::SyncResponse(_, peer, None) => {
+                peer_of(peer).map(|peer| WireFact::Unavailable {
+                    node: state.node,
+                    peer,
+                })
+            }
+            NetworkEvent::SyncRequestFailed(_, peer, _) => {
+                peer_of(peer).map(|peer| WireFact::Failed {
+                    node: state.node,
+                    peer,
+                })
+            }
+            _ => None,
+        };
+        if let Some(fact) = fact {
+            let mut events = state.events.lock().unwrap();
+            if events.facts.len() < 128 {
+                events.facts.push(fact);
+            } else {
+                events.overflow += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+// Filter before the observer actor mailbox: consensus gossip is not copied.
+struct SelectedWireEvents(ActorRef<NetworkEvent<RoomContext>>);
+
+impl OutputPortSubscriberTrait<NetworkEvent<RoomContext>> for SelectedWireEvents {
+    fn subscribe_to_port(&self, port: &OutputPort<NetworkEvent<RoomContext>>) {
+        port.subscribe(self.0.clone(), |event| match event {
+            NetworkEvent::PeerConnected(_)
+            | NetworkEvent::PeerDisconnected(_)
+            | NetworkEvent::SyncRequest(..)
+            | NetworkEvent::SyncResponse(..)
+            | NetworkEvent::SyncRequestFailed(..) => Some(event),
+            _ => None,
+        });
+    }
+}
+
+impl Subscriber<NetworkEvent<RoomContext>> for SelectedWireEvents {
+    fn send(&self, event: NetworkEvent<RoomContext>) {
+        if matches!(
+            event,
+            NetworkEvent::PeerConnected(_)
+                | NetworkEvent::PeerDisconnected(_)
+                | NetworkEvent::SyncRequest(..)
+                | NetworkEvent::SyncResponse(..)
+                | NetworkEvent::SyncRequestFailed(..)
+        ) {
+            let _ = self.0.cast(event);
+        }
+    }
+}
+
+pub(super) struct WireTrace {
+    events: std::sync::Arc<std::sync::Mutex<WireEvents>>,
+    peers: std::sync::Arc<Vec<PeerId>>,
+    observers: Vec<ActorRef<NetworkEvent<RoomContext>>>,
+}
+
+impl WireTrace {
+    pub(super) fn new(keys: &[PrivateKey]) -> Self {
+        assert_eq!(keys.len(), 4);
+        Self {
+            events: Default::default(),
+            peers: std::sync::Arc::new(
+                keys.iter()
+                    .map(|key| {
+                        net_peer_id(&key.public_key())
+                            .parse()
+                            .expect("test peer id")
+                    })
+                    .collect(),
+            ),
+            observers: Vec::new(),
+        }
+    }
+
+    pub(super) async fn attach(&mut self, node: &RoomNode, index: usize) {
+        let (actor, _) = Actor::spawn(
+            None,
+            WireCollector {
+                node: index,
+                peers: self.peers.clone(),
+                events: self.events.clone(),
+            },
+            WireCollector {
+                node: index,
+                peers: self.peers.clone(),
+                events: self.events.clone(),
+            },
+        )
+        .await
+        .expect("wire observer");
+        node.inner_net
+            .as_ref()
+            .expect("trace needs real gated network")
+            .cast(NetActorMsg::Subscribe(Box::new(SelectedWireEvents(
+                actor.clone(),
+            ))))
+            .expect("wire subscribe");
+        // DumpState follows Subscribe on the same real-network mailbox, so it
+        // also acts as the bounded subscription barrier before releasing n1.
+        let _ = self.dump(node).await;
+        self.observers.push(actor);
+    }
+
+    async fn dump(&self, node: &RoomNode) -> arc_malachitebft_engine::network::NetworkStateDump {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        node.inner_net
+            .as_ref()
+            .expect("real network")
+            .cast(NetActorMsg::DumpState(tx.into()))
+            .expect("network dump request");
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .expect("network dump deadline")
+            .expect("network dump response")
+            .expect("running real network")
+    }
+
+    pub(super) async fn assert_causal_page(
+        &self,
+        restarted: &RoomNode,
+        sources: &[RoomNode],
+        keys: &[PrivateKey],
+    ) {
+        let responders = {
+            let snapshot = self.events.lock().unwrap();
+            println!(
+                "rejoin wire facts={:?} overflow={}",
+                snapshot.facts, snapshot.overflow
+            );
+            assert_eq!(
+                snapshot.overflow, 0,
+                "wire trace saturated; cannot prove page delivery"
+            );
+            let mut responders = std::collections::BTreeSet::new();
+            for height in 3..=4 {
+                let source = (2..=4)
+                    .find(|source| {
+                        snapshot.facts.iter().any(|f| {
+                            matches!(f, WireFact::Request { node, peer: 1, start, end }
+                    if node == source && *start <= height && *end >= height)
+                        }) && snapshot.facts.iter().any(|f| {
+                            matches!(f, WireFact::Page { node: 1, peer, heights, .. }
+                    if peer == source && heights.contains(&height))
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("no correlated request and received decided page for h{height}")
+                    });
+                responders.insert(source);
+            }
+            responders
+        };
+        let victim_dump = self.dump(restarted).await;
+        for source in responders {
+            let source_key = keys[source - 1].public_key();
+            let source_peer =
+                libp2p_identity::PeerId::from_bytes(&self.peers[source - 1].to_bytes())
+                    .expect("test source peer id");
+            let victim_key = keys[0].public_key();
+            let source_dump = self.dump(&sources[source - 2]).await;
+            assert!(
+                victim_dump
+                    .peers
+                    .get(&source_peer)
+                    .is_some_and(|p| p.consensus_public_key.as_deref()
+                        == Some(source_key.as_bytes().as_slice())),
+                "restarted victim lacks the source's verified validator proof"
+            );
+            assert!(
+                source_dump
+                    .peers
+                    .get(
+                        &libp2p_identity::PeerId::from_bytes(&self.peers[0].to_bytes())
+                            .expect("test victim peer id")
+                    )
+                    .is_some_and(|p| p.consensus_public_key.as_deref()
+                        == Some(victim_key.as_bytes().as_slice())),
+                "decided-page source lacks the victim's verified validator proof"
+            );
+            println!("rejoin verified peer lifecycle: n1<->n{source} validator proofs match");
+        }
+    }
+}
+
+impl Drop for WireTrace {
+    fn drop(&mut self) {
+        let snapshot = self.events.lock().unwrap();
+        // Failure snapshots also include this bounded, redacted wire ledger.
+        println!(
+            "rejoin wire final={:?} overflow={}",
+            snapshot.facts, snapshot.overflow
+        );
+        for observer in &self.observers {
+            observer.stop(None);
+        }
+    }
+}
+
+// A minimal test-only tracing subscriber for the pinned consensus actor. It
+// never formats arbitrary log fields (WAL entries can contain private data).
+// It records only whitelisted startup branch names under n1's node span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalFact {
+    EmptyFetch,
+    NonemptyFetch,
+    Deferred,
+    Replaying,
+    Superseded,
+    DelayElapsed,
+    Running,
+    Error,
+}
+
+#[derive(Default)]
+struct WalEvents {
+    facts: Vec<WalFact>,
+    overflow: usize,
+}
+
+thread_local! {
+    static WAL_SPAN_STACK: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct SafeFields {
+    moniker: Option<String>,
+    message: Option<String>,
+    new: Option<String>,
+}
+
+impl tracing::field::Visit for SafeFields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if matches!(field.name(), "moniker" | "message" | "new") {
+            let value = format!("{value:?}");
+            if value.len() <= 128 {
+                match field.name() {
+                    "moniker" => self.moniker = Some(value),
+                    "message" => self.message = Some(value),
+                    "new" => self.new = Some(value),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+struct WalSubscriber {
+    next: std::sync::atomic::AtomicU64,
+    n1_spans: std::sync::Mutex<std::collections::HashSet<u64>>,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    events: std::sync::Arc<std::sync::Mutex<WalEvents>>,
+}
+
+impl tracing::Subscriber for WalSubscriber {
+    fn enabled(&self, meta: &tracing::Metadata<'_>) -> bool {
+        meta.is_span()
+            || (meta.target().contains("consensus") && *meta.level() <= tracing::Level::DEBUG)
+    }
+
+    fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut fields = SafeFields {
+            moniker: None,
+            message: None,
+            new: None,
+        };
+        if attrs.metadata().name() == "node" {
+            attrs.record(&mut fields);
+        }
+        let parent = attrs
+            .parent()
+            .map(tracing::span::Id::into_u64)
+            .or_else(|| WAL_SPAN_STACK.with(|stack| stack.borrow().last().copied()));
+        if fields
+            .moniker
+            .as_deref()
+            .is_some_and(|v| v.trim_matches('"') == "room-node-1")
+            || parent.is_some_and(|parent| self.n1_spans.lock().unwrap().contains(&parent))
+        {
+            self.n1_spans.lock().unwrap().insert(id);
+        }
+        tracing::span::Id::from_u64(id)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if !self.armed.load(Ordering::Relaxed) || !event.metadata().target().contains("consensus") {
+            return;
+        }
+        let parent = event
+            .parent()
+            .map(tracing::span::Id::into_u64)
+            .or_else(|| WAL_SPAN_STACK.with(|stack| stack.borrow().last().copied()));
+        if !parent.is_some_and(|parent| self.n1_spans.lock().unwrap().contains(&parent)) {
+            return;
+        }
+        let mut fields = SafeFields {
+            moniker: None,
+            message: None,
+            new: None,
+        };
+        event.record(&mut fields);
+        let message = fields.message.as_deref().unwrap_or("").trim_matches('"');
+        let fact = if message == "No WAL entries to replay" {
+            Some(WalFact::EmptyFetch)
+        } else if message.starts_with("Found ") && message.ends_with(" WAL entries") {
+            Some(WalFact::NonemptyFetch)
+        } else if message == "Deferring WAL replay to wait for sync" {
+            Some(WalFact::Deferred)
+        } else if message.starts_with("Replaying ") && message.ends_with(" WAL entries") {
+            Some(WalFact::Replaying)
+        } else if message == "Sync certificate applied; transitioning out of WaitingForSync" {
+            Some(WalFact::Superseded)
+        } else if message
+            == "WAL replay delay elapsed without consensus reaching a decision, replaying WAL"
+        {
+            Some(WalFact::DelayElapsed)
+        } else if message == "Phase transition"
+            && fields.new.as_deref().is_some_and(|v| v.contains("Running"))
+        {
+            Some(WalFact::Running)
+        } else if *event.metadata().level() == tracing::Level::ERROR {
+            Some(WalFact::Error)
+        } else {
+            None
+        };
+        if let Some(fact) = fact {
+            let mut events = self.events.lock().unwrap();
+            if events.facts.len() < 32 {
+                events.facts.push(fact);
+            } else {
+                events.overflow += 1;
+            }
+        }
+    }
+    fn enter(&self, id: &tracing::span::Id) {
+        WAL_SPAN_STACK.with(|stack| stack.borrow_mut().push(id.into_u64()));
+    }
+    fn exit(&self, id: &tracing::span::Id) {
+        WAL_SPAN_STACK.with(|stack| {
+            let removed = stack.borrow_mut().pop();
+            debug_assert_eq!(removed, Some(id.into_u64()));
+        });
+    }
+}
+
+pub(super) struct WalTrace {
+    events: std::sync::Arc<std::sync::Mutex<WalEvents>>,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl WalTrace {
+    pub(super) fn install() -> Self {
+        let events: std::sync::Arc<std::sync::Mutex<WalEvents>> = Default::default();
+        let armed: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+        tracing::subscriber::set_global_default(WalSubscriber {
+            next: Default::default(),
+            n1_spans: Default::default(),
+            armed: armed.clone(),
+            events: events.clone(),
+        })
+        .expect("crash/rejoin test needs its own WAL path subscriber");
+        Self { events, armed }
+    }
+    pub(super) fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+    pub(super) fn assert_startup(&self) {
+        let trace = self.events.lock().unwrap();
+        println!(
+            "rejoin n1 WAL startup facts={:?} overflow={}",
+            trace.facts, trace.overflow
+        );
+        assert_eq!(trace.overflow, 0, "WAL startup trace saturated");
+        let first_running = trace
+            .facts
+            .iter()
+            .position(|f| *f == WalFact::Running)
+            .expect("restarted n1 never reached consensus Running");
+        let startup = &trace.facts[..=first_running];
+        assert!(
+            !startup.contains(&WalFact::Error),
+            "restarted n1 reported consensus error"
+        );
+        let path = if startup.contains(&WalFact::EmptyFetch) {
+            "valid empty WAL"
+        } else if startup.contains(&WalFact::NonemptyFetch)
+            && startup.contains(&WalFact::Deferred)
+            && startup.contains(&WalFact::Superseded)
+        {
+            "sync certificate superseded delayed WAL"
+        } else if startup.contains(&WalFact::NonemptyFetch) && startup.contains(&WalFact::Replaying)
+        {
+            "nonempty WAL replay completed"
+        } else {
+            panic!("restarted n1 WAL startup path not established: {startup:?}")
+        };
+        println!("rejoin n1 WAL startup path={path}");
+    }
+}
+
+impl Drop for WalTrace {
+    fn drop(&mut self) {
+        let trace = self.events.lock().unwrap();
+        println!(
+            "rejoin n1 WAL final={:?} overflow={}",
+            trace.facts, trace.overflow
+        );
+        self.armed.store(false, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn wal_subscriber_scopes_startup_and_never_records_arbitrary_messages() {
+    let events: std::sync::Arc<std::sync::Mutex<WalEvents>> = Default::default();
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let subscriber = WalSubscriber {
+        next: Default::default(),
+        n1_spans: Default::default(),
+        armed: armed.clone(),
+        events: events.clone(),
+    };
+    let dispatch = tracing::Dispatch::new(subscriber);
+    tracing::dispatcher::with_default(&dispatch, || {
+        let other = tracing::error_span!("node", moniker = %"room-node-2");
+        {
+            let _guard = other.enter();
+            tracing::debug!(target: "consensus", "No WAL entries to replay");
+        }
+        let n1 = tracing::error_span!("node", moniker = %"room-node-1");
+        let consensus = tracing::error_span!(parent: &n1, "consensus");
+        let _guard = consensus.enter();
+        tracing::debug!(target: "consensus", "No WAL entries to replay");
+        tracing::info!(target: "consensus", prev = ?"Recovering", new = ?"Running", "Phase transition");
+        tracing::info!(target: "consensus", "private home /tmp/secret WAL entry");
+    });
+    assert_eq!(
+        events.lock().unwrap().facts,
+        vec![WalFact::EmptyFetch, WalFact::Running]
+    );
+    WalTrace { events, armed }.assert_startup();
+}
