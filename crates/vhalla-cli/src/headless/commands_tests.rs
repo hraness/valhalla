@@ -1,5 +1,7 @@
 use super::*;
 use crate::headless::catalog::{Hex, Id};
+#[cfg(target_os = "linux")]
+use crate::headless::lock_trace;
 use std::{
     io::Write,
     os::unix::{fs::PermissionsExt, net::UnixStream},
@@ -44,7 +46,14 @@ fn test_listen() -> Listen {
 }
 
 async fn run(home: &Path, shutdown: impl Future<Output = ()>) -> Result<(), ErrorBody> {
-    run_home(home, &test_listen(), shutdown).await
+    let result = run_home(home, &test_listen(), shutdown).await;
+    #[cfg(target_os = "linux")]
+    if matches!(&result, Err(error) if error.code == ErrorCode::ControlAlreadyRunning) {
+        // Capture the exact inode, kernel holder PID and our FDs before the
+        // caller unwinds; a later green retry cannot diagnose this refusal.
+        let _ = lock_trace::record(home, "run-refused");
+    }
+    result
 }
 
 async fn run_local(home: &Path, shutdown: impl Future<Output = ()>) -> Result<(), ErrorBody> {
@@ -583,10 +592,59 @@ async fn run_never_initializes_missing_native_state_and_init_releases_its_lock()
     assert!(run(&home, async {}).await.is_err());
     assert!(!home.join("account").exists());
     assert!(!home.join("catalog").exists());
+    // The historical refusals occurred on the first post-init run. Start the
+    // bounded read-only observer only after init and its separate snapshot:
+    // a slow init must not consume the first-run sampling budget.
     initialize_home(&home).await.unwrap();
-    run(&home, async {}).await.unwrap();
+    #[cfg(target_os = "linux")]
+    let after_init = lock_trace::record(&home, "after-init").expect("Linux lock trace");
+    #[cfg(target_os = "linux")]
+    let observer = lock_trace::FirstRunObserver::start(&home).expect("Linux lock observer");
+    #[cfg(target_os = "linux")]
+    observer.mark_first_run_started();
+    let first = run(&home, async {}).await;
+    #[cfg(target_os = "linux")]
+    observer.finish(first.is_err());
+    #[cfg(target_os = "linux")]
+    let after_first = lock_trace::record(
+        &home,
+        if first.is_ok() {
+            "after-shutdown"
+        } else {
+            "after-refusal"
+        },
+    )
+    .expect("Linux lock trace");
+    first.unwrap();
     assert!(!home.join("control/admin.sock").exists());
     assert!(!home.join("control/agent.sock").exists());
+    // The retained home must restart on the same lock inode after shutdown.
+    let restarted = run(&home, async {}).await;
+    #[cfg(target_os = "linux")]
+    let after_restart = lock_trace::record(
+        &home,
+        if restarted.is_ok() {
+            "after-restart"
+        } else {
+            "restart-refused"
+        },
+    )
+    .expect("Linux lock trace");
+    restarted.unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        for state in [&after_init, &after_first, &after_restart] {
+            assert_eq!((state.dev, state.ino), (after_init.dev, after_init.ino));
+            assert!(
+                state.fds.is_empty(),
+                "supervisor lock FD survived: {state:?}"
+            );
+            assert!(
+                state.holders.is_empty(),
+                "supervisor lock still held: {state:?}"
+            );
+        }
+    }
 }
 
 async fn ready(home: &Path) {

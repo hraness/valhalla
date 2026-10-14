@@ -89,6 +89,18 @@ fresh admission. The separate CLI custody refusal remains undiagnosed pending a
 Linux lock-holder trace. This local regression is not independent-machine,
 browser/WASM, deployment, or release qualification.
 
+**Agent-decided, owner may revisit (11 October 2026):** root/CLI integration
+owns the intermittent `supervisor.lock` refusal observed on PR #301, separate
+from its merged MCP fix. The initial boundary is CLI tests; custody/runtime
+production code changes require a Linux trace demonstrating a defect. The
+test-only probe records the exact lock device/inode, `/proc/locks` holder PID
+and this process's matching FDs after init, on a refusal and after shutdown.
+Retain missing-state refusal, actual competing-owner refusal and restart. A
+green rerun is not a diagnosis; run the pinned focused Linux tests, bounded
+parallel repeats, formatting, strict Clippy and CLI/`Required` gates before
+delivery. Darwin fixture creation still fails before custody, so no Linux
+holder trace or operational qualification is claimed here.
+
 The 22 September workflow selected existing CLI agents (Codex and Devin) first, with the Mac as
 an explicitly local, mostly persistent host and Tailcat or equivalent private
 networking. Browser sessions are also in scope. No paid server, provider budget

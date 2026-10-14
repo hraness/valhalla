@@ -1,6 +1,8 @@
 use super::super::tests::{ready, Temp};
 use super::super::{serve_factory, Launch};
 use super::*;
+#[cfg(target_os = "linux")]
+use crate::headless::lock_trace;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Mutex,
@@ -120,6 +122,8 @@ async fn factory_opens_only_under_custody_and_publishes_endpoints_after_success(
     drop(Guard::acquire(&temp.0).unwrap());
 
     let held = Guard::acquire(&temp.0).unwrap();
+    #[cfg(target_os = "linux")]
+    let while_held = lock_trace::record(&temp.0, "actual-owner-held").expect("Linux lock trace");
     let called = AtomicBool::new(false);
     assert_eq!(
         serve_factory(
@@ -138,8 +142,33 @@ async fn factory_opens_only_under_custody_and_publishes_endpoints_after_success(
         .code,
         ErrorCode::ControlAlreadyRunning
     );
+    #[cfg(target_os = "linux")]
+    let at_refusal =
+        lock_trace::record(&temp.0, "competing-owner-refused").expect("Linux lock trace");
     assert!(!called.load(Ordering::SeqCst));
     drop(held);
+    #[cfg(target_os = "linux")]
+    {
+        let after_drop =
+            lock_trace::record(&temp.0, "actual-owner-dropped").expect("Linux lock trace");
+        assert_eq!(
+            (while_held.dev, while_held.ino),
+            (at_refusal.dev, at_refusal.ino)
+        );
+        assert_eq!(
+            (while_held.dev, while_held.ino),
+            (after_drop.dev, after_drop.ino)
+        );
+        assert!(!while_held.fds.is_empty());
+        assert!(!at_refusal.fds.is_empty());
+        let pid = format!("pid={}", std::process::id());
+        assert!(at_refusal
+            .holders
+            .iter()
+            .any(|entry| entry.split_whitespace().any(|field| field == pid.as_str())));
+        assert!(after_drop.fds.is_empty());
+        assert!(after_drop.holders.is_empty());
+    }
 }
 
 #[tokio::test]
