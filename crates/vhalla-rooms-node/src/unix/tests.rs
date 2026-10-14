@@ -393,8 +393,8 @@ async fn crashed_validator_recovers_and_rejoins() {
     // Height and journal agreement alone do not show that the application
     // applied the planned creations only once. Compare the live application
     // effects with the deterministic signed plan on every validator. The
-    // journal chain above is durable, but this assertion does not reopen
-    // the application stores or count in-memory apply function calls.
+    // journal chain above is durable; the stopped-store reopen below checks
+    // recoverable persistence, not the number of apply function calls.
     let expected_tip = plan.get(&HEIGHTS).unwrap();
     let scenario = fixture::scenario(8, 16);
     for node in std::iter::once(&restarted).chain(nodes.iter()) {
@@ -423,10 +423,46 @@ async fn crashed_validator_recovers_and_rejoins() {
     }
     assert_eq!(restarted.adapter.lock().unwrap().frontier().height, HEIGHTS);
 
-    for node in nodes {
+    // Stop every application task before reading snapshots: `crash` aborts
+    // the task but does not join it, and an in-flight synchronous commit can
+    // otherwise race a supposedly post-crash store read.
+    for mut node in nodes.into_iter().chain(std::iter::once(restarted)) {
+        node.task.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(10), &mut node.task)
+            .await
+            .expect("application task must stop before reading snapshot stores");
         node.crash().await;
     }
-    restarted.crash().await;
+
+    // A fresh adapter must reconstruct the same application state from the
+    // stopped nodes' on-disk journal and snapshot stores, not their live Arcs.
+    // Adapter::open may reconcile retained intents, so this checks recoverable
+    // persistence, not whether both snapshot pins needed no repair.
+    let shared_genesis = genesis();
+    for index in 1..=4 {
+        let app_home = base.join(format!("n{index}/app"));
+        let reopened = Adapter::open(app_home, &shared_genesis)
+            .expect("stopped application must reopen from durable state");
+        assert_eq!(reopened.frontier().height, HEIGHTS);
+        let app = reopened.application();
+        let registry = app.registry();
+        assert_eq!(registry.digest(), expected_tip.result_registry);
+        assert_eq!(*app.social().root().as_bytes(), expected_tip.result_social);
+        assert_eq!(
+            registry
+                .accounts()
+                .values()
+                .map(|account| u64::from(account.lifetime_slots))
+                .sum::<u64>(),
+            HEIGHTS,
+            "unexpected persisted room creations at n{index}"
+        );
+        for owner in scenario.owners.iter().take(HEIGHTS as usize) {
+            let account = registry.account(owner.id);
+            assert_eq!(account.lifetime_slots, 1, "persisted slots at n{index}");
+            assert_eq!(account.spent, 1, "persisted charges at n{index}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&base);
 }
 
