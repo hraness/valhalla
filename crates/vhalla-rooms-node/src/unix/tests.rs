@@ -344,6 +344,37 @@ async fn crashed_validator_recovers_and_rejoins() {
             "journal state differs across validators"
         );
     }
+    // Height and journal agreement alone do not show that the application
+    // applied the planned creations only once. Compare the live application
+    // effects with the deterministic signed plan on every validator. The
+    // journal chain above is durable, but this assertion does not reopen
+    // the application stores or count in-memory apply function calls.
+    let expected_tip = plan.get(&HEIGHTS).unwrap();
+    let scenario = fixture::scenario(8, 16);
+    for node in std::iter::once(&restarted).chain(nodes.iter()) {
+        let adapter = node.adapter.lock().unwrap();
+        let app = adapter.application();
+        let registry = app.registry();
+        assert_eq!(registry.digest(), expected_tip.result_registry);
+        assert_eq!(*app.social().root().as_bytes(), expected_tip.result_social);
+        assert_eq!(
+            registry
+                .accounts()
+                .values()
+                .map(|account| u64::from(account.lifetime_slots))
+                .sum::<u64>(),
+            HEIGHTS,
+            "unexpected cumulative room creations"
+        );
+        for owner in scenario.owners.iter().take(HEIGHTS as usize) {
+            let account = registry.account(owner.id);
+            assert_eq!(
+                account.lifetime_slots, 1,
+                "duplicate creation for planned owner"
+            );
+            assert_eq!(account.spent, 1, "duplicate charge for planned owner");
+        }
+    }
     assert_eq!(restarted.adapter.lock().unwrap().frontier().height, HEIGHTS);
 
     for node in nodes {
@@ -351,6 +382,39 @@ async fn crashed_validator_recovers_and_rejoins() {
     }
     restarted.crash().await;
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Keep the recovery assertion's expected slot/charge counts tied to
+/// replaying the real signed plan, without requiring network access.
+#[test]
+fn rejoin_plan_creates_one_room_and_charge_per_owner() {
+    let plan = fixture::plan(4, 8, 16);
+    let mut app = vhalla_rooms_consensus::Application::genesis(
+        plan.genesis.archive.clone(),
+        plan.genesis.registry().unwrap(),
+    );
+    for batch in plan.batches.values() {
+        let checked = app.validate(batch).unwrap();
+        app.apply_locally(checked);
+    }
+    let scenario = fixture::scenario(8, 16);
+    assert_eq!(
+        app.registry()
+            .accounts()
+            .values()
+            .map(|account| u64::from(account.lifetime_slots))
+            .sum::<u64>(),
+        4
+    );
+    for owner in scenario.owners.iter().take(4) {
+        let account = app.registry().account(owner.id);
+        assert_eq!(account.lifetime_slots, 1);
+        assert_eq!(account.spent, 1);
+    }
+    assert_eq!(
+        app.registry().digest(),
+        plan.batches.get(&4).unwrap().result_registry
+    );
 }
 
 /// Two validators of a four-validator set cannot form a quorum: neither
