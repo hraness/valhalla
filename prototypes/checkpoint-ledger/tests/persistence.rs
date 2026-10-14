@@ -753,21 +753,68 @@ fn preparation_rejects_bad_history_uncheckpointed_suffix_rotation_and_overflow()
 
 #[test]
 fn pin_structure_is_exact_but_decode_is_not_authentication() {
-    let (_, _, pin) = base();
+    let (mut disk, _, pin) = base();
     let raw = pin.encode();
+    assert_eq!(PIN_BYTES, 200);
     assert_eq!(raw.len(), PIN_BYTES);
-    assert_eq!(Pin::decode(&raw), Ok(pin));
+    assert_eq!(Pin::decode(&raw), Ok(pin.clone()));
+    assert_eq!(Pin::decode(&raw).unwrap().encode(), raw);
+
     for end in 0..raw.len() {
-        assert!(Pin::decode(&raw[..end]).is_err());
+        assert_eq!(
+            Pin::decode(&raw[..end]),
+            Err(ProtocolError::InvalidEncoding),
+            "prefix length {end}"
+        );
     }
-    let mut trailing = raw.clone();
-    trailing.push(0);
-    assert!(Pin::decode(&trailing).is_err());
-    let mut forged = raw;
-    // Ordinary data fields remain parseable when changed: only checked recovery
-    // against an owner-selected local store gives this record meaning.
-    *forged.last_mut().unwrap() ^= 1;
-    assert!(Pin::decode(&forged).is_ok());
+    for suffix in u8::MIN..=u8::MAX {
+        let mut trailing = raw.clone();
+        trailing.push(suffix);
+        assert_eq!(
+            Pin::decode(&trailing),
+            Err(ProtocolError::InvalidEncoding),
+            "suffix {suffix}"
+        );
+    }
+
+    let domain_len = b"vhalla/checkpoint-store/pin/v1".len();
+    for offset in 0..domain_len + 2 {
+        for bit in 0..8 {
+            let mut altered = raw.clone();
+            altered[offset] ^= 1 << bit;
+            assert_eq!(
+                Pin::decode(&altered),
+                Err(ProtocolError::InvalidEncoding),
+                "domain/version byte {offset}, bit {bit}"
+            );
+        }
+    }
+    let mut zero_generation = raw.clone();
+    zero_generation[domain_len + 2..domain_len + 10].fill(0);
+    assert_eq!(
+        Pin::decode(&zero_generation),
+        Err(ProtocolError::InvalidEncoding)
+    );
+
+    // Data-field changes can decode and re-encode canonically, but they are
+    // unauthenticated plain data, not a recovery pin selected by the witness.
+    let mut changed = raw;
+    *changed.last_mut().unwrap() ^= 1;
+    let unauthenticated = Pin::decode(&changed).unwrap();
+    assert_ne!(unauthenticated, pin);
+    assert_eq!(unauthenticated.encode(), changed);
+    disk.pin = Some(unauthenticated.clone());
+    disk.durable_pin = Some(unauthenticated);
+    let before = disk.clone();
+    let mut witness = IndependentWitness {
+        latest: Some(pin),
+        ..Default::default()
+    };
+    assert_eq!(
+        load_protected(&mut disk, &mut witness, trust(), 64).err(),
+        Some(ProtectedLoadError::PinMismatch)
+    );
+    assert_eq!(disk, before);
 }
 
 #[cfg(all(feature = "native-store", unix))]
