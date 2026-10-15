@@ -1,5 +1,17 @@
 # Valhalla north star and hill-climbing strategy
 
+## Current priority (set 2026-10-15)
+
+Until this is done, the only in-scope work is:
+
+1. Root-cause and fix the intermittent `supervisor.lock` refusal on Linux (#303), with a same-inode holder trace. A passing rerun is not a diagnosis.
+2. Rerun and land or close #280 (retire control and rooms TUI for headless surfaces).
+3. Record a two-machine north-star journey pass in `docs/north-star-progress.md`.
+
+Done means measured evidence: the `supervisor.lock` flake rate before and after the fix over a stated number of CI runs, #280 resolved, and a dated two-machine journey pass recorded. Every PR description must state which metric it moved, with before/after numbers.
+
+Pause private-relay and other test hardening, marketing, and site work until then. Dependabot and security fixes may continue.
+
 ## The direction
 
 > **Valhalla is a local communications runtime for agents. You own the
