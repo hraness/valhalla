@@ -4,6 +4,18 @@
 - The sole native-runtime exception is Slopcamera’s documented signature-verified, version-bound, immutable task-owned Chrome snapshot, never a direct launch of the installed application. Its current integrity-bound launch contract must disable `MacAppCodeSignClone`; retain vendor identity verification, browser custody, graceful cleanup, and regression checks. Qualify the native fix with live clone-growth and cleanup evidence before activating this exception. It is not an executable override or fallback for ordinary automation; see [the native-runtime exception](https://github.com/hraness/.github/blob/main/BROWSER_AUTOMATION.md#slopcamera-native-runtime-exception).
 <!-- browser-automation:end -->
 
+## Current priority (set 2026-10-15)
+
+Until this is done, the only in-scope work is:
+
+1. Root-cause and fix the intermittent `supervisor.lock` refusal on Linux (#303), with a same-inode holder trace. A passing rerun is not a diagnosis.
+2. Rerun and land or close #280 (retire control and rooms TUI for headless surfaces).
+3. Record a two-machine north-star journey pass in `docs/north-star-progress.md`.
+
+Done means measured evidence: the `supervisor.lock` flake rate before and after the fix over a stated number of CI runs, #280 resolved, and a dated two-machine journey pass recorded. Every PR description must state which metric it moved, with before/after numbers.
+
+Pause private-relay and other test hardening, marketing, and site work until then. Dependabot and security fixes may continue.
+
 # Contents
 
 - `crates/` – production Rust workspace crates for identity, social state, rooms consensus, games, storage, transport, the CLI, and supporting libraries.

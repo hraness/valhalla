@@ -1,5 +1,9 @@
 # Global network roadmap progress
 
+## Current priority (set 2026-10-15)
+
+See the same section in [north-star.md](north-star.md) and root `AGENTS.md`. Record the dated two-machine journey pass on this page when it exists. Do not expand the global-network stages below until that priority is done.
+
 This page is the join surface for the public-network roadmap. A stage is green
 only when its acceptance evidence is linked from the maintained plan; local
 tests and a single-provider soak do not advance a global-network stage by
