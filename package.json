@@ -31,7 +31,7 @@
     "@resvg/resvg-js": "2.6.2",
     "playwright-core": "1.64.0",
     "react": "19.2.3",
-    "react-dom": "19.2.3",
+    "react-dom": "19.3.0",
     "satori": "0.52.0"
   },
   "overrides": {
