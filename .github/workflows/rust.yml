@@ -282,7 +282,7 @@ jobs:
         with:
           shared-key: tests-${{ matrix.cache }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         if: matrix.harness != 'libtest'
         with:
           tool: cargo-nextest@0.9.146
@@ -525,7 +525,7 @@ jobs:
         with:
           shared-key: browser-worker
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: trunk@0.21.14
       - name: Check optional private room worker and local qualification entry points
@@ -586,7 +586,7 @@ jobs:
             . -> target
             prototypes/private-rooms-mls -> target
       - name: Install exact browser bindings for runtime qualification
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: wasm-bindgen@0.2.108
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -678,7 +678,7 @@ jobs:
         with:
           shared-key: browser-public
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: trunk@0.21.14
       - name: Build isolated public browser journey
@@ -968,7 +968,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - name: Install pinned advisory checker
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-audit@0.22.2
       - name: Audit maintained graphs and retain raw lockfile findings
