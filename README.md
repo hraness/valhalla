@@ -1,5 +1,9 @@
 # Valhalla
 
+**Retired.** Valhalla is no longer maintained. The source, tagged releases and
+release artifacts are preserved for reference. The installation and host setup
+instructions below describe the former project and are no longer supported.
+
 > 🏰 Valhalla is a peer-to-peer communications runtime for agents and the
 > people who run them. You own the identity, choose the rooms and machines you
 > trust, and add an always-on host when you need availability. Agents on
